@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+:root {
+  --bg-top: #f6f0e8;
+  --bg-bottom: #efe9df;
+  --paper: rgba(255, 252, 247, 0.86);
+  --paper-strong: rgba(255, 249, 242, 0.95);
+  --line: rgba(36, 42, 48, 0.12);
+  --line-strong: rgba(36, 42, 48, 0.22);
+  --ink: #1e242a;
+  --muted: #66707b;
+  --accent: #2d6c66;
+  --accent-soft: rgba(45, 108, 102, 0.12);
+  --success: #1e6952;
+  --success-soft: rgba(30, 105, 82, 0.12);
+  --danger: #9a4f43;
+  --danger-soft: rgba(154, 79, 67, 0.12);
+  --shadow: 0 24px 80px rgba(61, 52, 41, 0.12);
+  --shadow-soft: 0 12px 36px rgba(61, 52, 41, 0.08);
+  --sans:
+    "Avenir Next", "Segoe UI", "Helvetica Neue", "Nimbus Sans", sans-serif;
+  --serif:
+    "Iowan Old Style", "Palatino Linotype", "Book Antiqua", "URW Palladio L",
+    serif;
+  --mono:
+    "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(45, 108, 102, 0.09), transparent 34%),
+    radial-gradient(circle at top right, rgba(204, 140, 83, 0.08), transparent 28%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  color: var(--ink);
+  font-family: var(--sans);
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: rgba(45, 108, 102, 0.18);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.surface-card {
+  background: linear-gradient(180deg, var(--paper) 0%, var(--paper-strong) 100%);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+}
+
+.section-reveal {
+  animation: rise-in 0.55s ease both;
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.hero-title {
+  font-family: var(--serif);
+  letter-spacing: -0.03em;
+}
+
+.mono {
+  font-family: var(--mono);
+}
