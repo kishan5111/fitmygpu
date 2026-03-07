@@ -37,4 +37,3 @@ This is especially important for newer releases where architecture choices direc
 If this project is useful to you, support it here:
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/kishanvavdara)
-# fitmygpu
