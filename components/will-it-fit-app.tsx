@@ -600,10 +600,6 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             </p>
             <div className="mt-3 space-y-2">
               <p>
-                Estimates are approximate and can shift with framework, kernels,
-                and runtime implementation details.
-              </p>
-              <p>
                 The calculator works in raw bytes, displays decimal GB, and keeps
                 conservative runtime headroom.
               </p>
