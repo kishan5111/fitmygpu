@@ -6,7 +6,7 @@ The goal is a calm technical tool that answers the fit question quickly without 
 
 ## Preview
 
-![FitMyGPU UI](./docs/ui-page-home.png)
+![FitMyGPU UI](./asset/ui-page-home.png)
 
 ## About The Project
 
