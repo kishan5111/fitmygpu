@@ -16,6 +16,20 @@ export const gpus: GpuSpec[] = [
     classType: "Consumer",
   },
   {
+    id: "rtx-5090-32gb",
+    displayName: "RTX 5090 32GB",
+    vramGb: 32,
+    memoryBandwidthGbps: 1792,
+    classType: "Consumer",
+  },
+  {
+    id: "rtx-pro-6000-96gb",
+    displayName: "RTX PRO 6000 96GB",
+    vramGb: 96,
+    memoryBandwidthGbps: 1792,
+    classType: "Workstation",
+  },
+  {
     id: "a100-40gb",
     displayName: "A100 40GB",
     vramGb: 40,
@@ -34,6 +48,20 @@ export const gpus: GpuSpec[] = [
     displayName: "H100 80GB",
     vramGb: 80,
     memoryBandwidthGbps: 3350,
+    classType: "Datacenter",
+  },
+  {
+    id: "h200-141gb",
+    displayName: "H200 141GB",
+    vramGb: 141,
+    memoryBandwidthGbps: 4800,
+    classType: "Datacenter",
+  },
+  {
+    id: "l40-48gb",
+    displayName: "L40 48GB",
+    vramGb: 48,
+    memoryBandwidthGbps: 864,
     classType: "Datacenter",
   },
   {

@@ -26,7 +26,7 @@ import {
 import { estimateVram } from "@/lib/estimator";
 import { applyModelConstraints, modelSupportsMode } from "@/lib/model-constraints";
 import { normalizeEstimateInput, serializeEstimateInput } from "@/lib/query-state";
-import type { EstimateInput, EstimateResult, Mode } from "@/lib/types";
+import type { EstimateInput, EstimateResult, Mode, ModelSpec } from "@/lib/types";
 
 type Props = {
   initialInput: EstimateInput;
@@ -171,8 +171,7 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             </div>
 
             <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
-              {selectedModel.family} from {selectedModel.organization}. Max advertised
-              context: {formatInteger(selectedModel.contextLength)} tokens.
+              {formatModelAtGlance(selectedModel)}
             </p>
 
             {selectedModel.fixedDtype ? (
@@ -891,6 +890,15 @@ function DetailRow({ label, value }: { label: string; value: string }) {
       <p className="text-right text-sm leading-6 text-[var(--ink)]">{value}</p>
     </div>
   );
+}
+
+function formatModelAtGlance(model: ModelSpec) {
+  const kvHeads = model.numKvHeads ?? model.numAttentionHeads;
+  const parameterLine = model.activeParams
+    ? `${formatParamCount(model.totalParams)} total • ${formatParamCount(model.activeParams)} active`
+    : `${formatParamCount(model.totalParams)} dense`;
+
+  return `${parameterLine} • ${formatInteger(model.contextLength)} context • ${kvHeads} KV heads`;
 }
 
 function ChevronIcon({ open }: { open: boolean }) {

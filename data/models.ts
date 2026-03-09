@@ -19,11 +19,11 @@ export const models: ModelSpec[] = [
     license: "Apache 2.0",
     sourceUrl: "https://openai.com/open-models",
     shortDescription:
-      "Open-weight reasoning model with a sparse MoE stack and a long-context inference profile.",
+      "Smaller GPT-OSS reasoning checkpoint with a routed MoE stack, 128K context, and a relatively light active path.",
     researchHighlight:
-      "Mixture-of-experts design with alternating full and sliding-window attention for long-context efficiency.",
+      "Alternating full and sliding-window attention keeps long-context attention cost practical inside the routed MoE stack.",
     memoryNote:
-      "Sparse experts and MXFP4-style FFN weight compression make the resident footprint more practical than a dense model at the same total parameter count.",
+      "MXFP4-style FFN weight compression and sparse routing make the resident footprint materially more practical than a dense 21B-class checkpoint.",
   },
   {
     id: "gpt-oss-120b",
@@ -43,11 +43,11 @@ export const models: ModelSpec[] = [
     license: "Apache 2.0",
     sourceUrl: "https://openai.com/open-models",
     shortDescription:
-      "Larger GPT-OSS MoE variant aimed at high-quality open-weight reasoning and agentic workloads.",
+      "Largest GPT-OSS checkpoint in v0, built for higher-capacity open reasoning with a much larger resident expert pool.",
     researchHighlight:
-      "Scaled-up GPT-OSS MoE stack with alternating attention patterns to preserve long-context throughput.",
+      "The same alternating full and sliding-window attention recipe scales to a much deeper MoE stack for long-context throughput.",
     memoryNote:
-      "The MoE layout keeps per-token compute closer to active params, while compressed expert weights help the model fit more efficiently than a similarly sized dense checkpoint.",
+      "Active compute stays far below total params, but the much larger resident expert pool still pushes this model firmly into high-VRAM territory.",
   },
   {
     id: "llama-3.1-8b",
