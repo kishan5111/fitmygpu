@@ -49,13 +49,13 @@ export const models: ModelSpec[] = [
     inferenceProfiles: [
       calibratedProfile({
         id: "official-mixed",
-        label: "Official mixed checkpoint",
+        label: "Mixed MXFP4 + BF16 checkpoint",
         effectiveDtype: "bf16",
         targetMemoryGb: 16,
         targetBatchSize: 1,
         targetContextLength: 4096,
         sourceUrl: "https://huggingface.co/openai/gpt-oss-20b",
-        note: "OpenAI's official GPT-OSS 20B card says the released checkpoint runs within 16 GB of memory, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
+        note: "OpenAI says GPT-OSS 20B runs within 16 GB, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
       }),
     ],
   },
@@ -85,13 +85,13 @@ export const models: ModelSpec[] = [
     inferenceProfiles: [
       calibratedProfile({
         id: "official-mixed",
-        label: "Official mixed checkpoint",
+        label: "Mixed MXFP4 + BF16 checkpoint",
         effectiveDtype: "bf16",
         targetMemoryGb: 80,
         targetBatchSize: 1,
         targetContextLength: 4096,
         sourceUrl: "https://huggingface.co/openai/gpt-oss-120b",
-        note: "OpenAI's official GPT-OSS 120B card says the released checkpoint fits a single 80 GB GPU, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
+        note: "OpenAI says GPT-OSS 120B fits a single 80 GB GPU, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
       }),
     ],
   },

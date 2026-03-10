@@ -68,6 +68,7 @@ export interface EstimateInput {
 export interface BreakdownItem {
   key:
     | "weights"
+    | "masterWeights"
     | "kvCache"
     | "activations"
     | "gradients"
@@ -96,6 +97,7 @@ export interface EstimateResult {
   headroomBytes: number;
   deficitBytes: number;
   weightsBytes: number;
+  masterWeightsBytes: number;
   kvCacheBytes: number;
   activationsBytes: number;
   gradientsBytes: number;

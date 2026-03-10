@@ -90,6 +90,18 @@ export function estimateVram(input: EstimateInput): EstimateResult {
     notes.push(strategy.weightNote);
   }
 
+  if (strategy.mode === "training") {
+    notes.push(
+      "Training estimates assume a single-GPU mixed-precision AdamW setup with fp32 optimizer states, fp32 master weights for trainable params when compute is below fp32, and no CPU offload or ZeRO/FSDP sharding.",
+    );
+
+    if (strategy.effectiveTrainingType !== "sft") {
+      notes.push(
+        "LoRA-style training assumes rank 16 adapters on the q/k/v/o projections in every layer.",
+      );
+    }
+  }
+
   if (model.fixedDtype) {
     notes.push(
       `${model.displayName} is treated as a fixed ${formatDtype(
@@ -218,6 +230,7 @@ function buildInferenceEstimate(
 
   return {
     weightsBytes,
+    masterWeightsBytes: 0,
     kvCacheBytes,
     activationsBytes: 0,
     gradientsBytes: 0,
@@ -255,17 +268,20 @@ function buildTrainingEstimate(
   const activationsBytes = baseActivationBytes * packingMultiplier;
 
   let weightsBytes = 0;
+  let masterWeightsBytes = 0;
   let gradientsBytes = 0;
   let optimizerBytes = 0;
   let grpoExtraBytes = 0;
 
   if (strategy.effectiveTrainingType === "sft") {
     weightsBytes = model.totalParams * strategy.baseWeightBytes;
+    masterWeightsBytes = strategy.computeBytes < 4 ? model.totalParams * 4 : 0;
     gradientsBytes = model.totalParams * strategy.computeBytes;
     optimizerBytes = model.totalParams * 8;
   } else {
     const adapterWeightBytes = adapterParams * strategy.computeBytes;
     weightsBytes = model.totalParams * strategy.baseWeightBytes + adapterWeightBytes;
+    masterWeightsBytes = strategy.computeBytes < 4 ? adapterParams * 4 : 0;
     gradientsBytes = adapterParams * strategy.computeBytes;
     optimizerBytes = adapterParams * 8;
   }
@@ -282,6 +298,7 @@ function buildTrainingEstimate(
 
   const subtotal =
     weightsBytes +
+    masterWeightsBytes +
     gradientsBytes +
     optimizerBytes +
     activationsBytes +
@@ -296,10 +313,21 @@ function buildTrainingEstimate(
       bytes: weightsBytes,
       note:
         strategy.effectiveTrainingType === "sft"
-          ? `${formatParamCount(model.totalParams)} trainable parameters remain resident during SFT.`
+          ? `${formatParamCount(model.totalParams)} trainable parameters remain resident during SFT in the selected compute format.`
           : `Frozen base weights plus roughly ${formatParamCount(
               adapterParams,
             )} LoRA adapter parameters.`,
+    },
+    {
+      key: "masterWeights",
+      label: "Master weights",
+      bytes: masterWeightsBytes,
+      note:
+        masterWeightsBytes > 0
+          ? strategy.effectiveTrainingType === "sft"
+            ? "Conservative mixed-precision baseline: fp32 master weights for all trainable parameters."
+            : "Conservative mixed-precision baseline: fp32 master weights for the trainable adapters."
+          : "No separate fp32 master weights are assumed when training directly in fp32.",
     },
     {
       key: "activations",
@@ -366,6 +394,23 @@ function buildTrainingEstimate(
           : "Dense SFT keeps the whole model trainable; LoRA keeps only adapters trainable.",
     },
     {
+      label: "Master weights",
+      symbolic:
+        strategy.effectiveTrainingType === "sft"
+          ? "trainable params × 4 bytes"
+          : "adapter params × 4 bytes",
+      substituted:
+        masterWeightsBytes > 0
+          ? strategy.effectiveTrainingType === "sft"
+            ? `${formatParamCount(model.totalParams)} × 4 = ${formatGb(masterWeightsBytes)}`
+            : `${formatParamCount(adapterParams)} × 4 = ${formatGb(masterWeightsBytes)}`
+          : `0 = ${formatGb(masterWeightsBytes)}`,
+      note:
+        masterWeightsBytes > 0
+          ? "This conservative training path keeps an fp32 master copy for every trainable parameter."
+          : "No separate master copy is needed when the trainable parameters already live in fp32.",
+    },
+    {
       label: "Activations",
       symbolic:
         "batch × context × hidden × layers × activation factor × bytes",
@@ -428,6 +473,7 @@ function buildTrainingEstimate(
 
   return {
     weightsBytes,
+    masterWeightsBytes,
     kvCacheBytes: 0,
     activationsBytes,
     gradientsBytes,

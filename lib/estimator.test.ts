@@ -25,6 +25,7 @@ function summarize(result: ReturnType<typeof estimateVram>) {
     fits: result.fits,
     totalGb: Number((result.totalBytes / 1_000_000_000).toFixed(1)),
     weightsGb: Number((result.weightsBytes / 1_000_000_000).toFixed(1)),
+    masterGb: Number((result.masterWeightsBytes / 1_000_000_000).toFixed(1)),
     kvGb: Number((result.kvCacheBytes / 1_000_000_000).toFixed(1)),
     activationsGb: Number((result.activationsBytes / 1_000_000_000).toFixed(1)),
     gradientsGb: Number((result.gradientsBytes / 1_000_000_000).toFixed(1)),
@@ -101,11 +102,11 @@ describe("estimateVram", () => {
       }),
     );
 
-    expect(gptOss20B.calculationProfile).toBe("Official mixed checkpoint");
+    expect(gptOss20B.calculationProfile).toBe("Mixed MXFP4 + BF16 checkpoint");
     expect(gptOss20B.fits).toBe(true);
     expect(gptOss20B.weightsBytes / 1_000_000_000).toBeLessThan(16);
 
-    expect(gptOss120B.calculationProfile).toBe("Official mixed checkpoint");
+    expect(gptOss120B.calculationProfile).toBe("Mixed MXFP4 + BF16 checkpoint");
     expect(gptOss120B.fits).toBe(true);
     expect(gptOss120B.weightsBytes / 1_000_000_000).toBeLessThan(80);
   });
@@ -201,6 +202,7 @@ describe("estimateVram", () => {
           "fits": true,
           "gradientsGb": 0,
           "kvGb": 1.3,
+          "masterGb": 0,
           "optimizerGb": 0,
           "profile": "Proxy 4-bit estimate",
           "totalGb": 44.2,
@@ -214,6 +216,7 @@ describe("estimateVram", () => {
           "fits": true,
           "gradientsGb": 0,
           "kvGb": 0.2,
+          "masterGb": 0,
           "optimizerGb": 0,
           "profile": "Official BF16 checkpoint",
           "totalGb": 17,
@@ -225,6 +228,7 @@ describe("estimateVram", () => {
           "fits": false,
           "gradientsGb": 0,
           "kvGb": 0.5,
+          "masterGb": 0,
           "optimizerGb": 0,
           "profile": "Official BF16 checkpoint",
           "totalGb": 103.3,
@@ -236,9 +240,10 @@ describe("estimateVram", () => {
           "fits": true,
           "gradientsGb": 0,
           "kvGb": 0,
+          "masterGb": 0.1,
           "optimizerGb": 0.1,
           "profile": "QLoRA",
-          "totalGb": 16.2,
+          "totalGb": 16.3,
           "warnings": [],
           "weightsGb": 4.2,
         },
@@ -247,9 +252,10 @@ describe("estimateVram", () => {
           "fits": false,
           "gradientsGb": 15.2,
           "kvGb": 0,
+          "masterGb": 30.4,
           "optimizerGb": 60.9,
           "profile": "BF16 SFT",
-          "totalGb": 111.3,
+          "totalGb": 144.8,
           "warnings": [],
           "weightsGb": 15.2,
         },
