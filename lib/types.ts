@@ -4,6 +4,20 @@ export type TrainingType = "sft" | "lora" | "qlora" | "grpo";
 
 export type Dtype = "fp32" | "fp16" | "bf16" | "fp8" | "int8" | "int4";
 
+export interface InferenceProfile {
+  id: string;
+  label: string;
+  effectiveDtype: Dtype;
+  official: boolean;
+  note: string;
+  sourceUrl: string;
+  weightMode: "direct" | "calibrated";
+  weightBytes?: number;
+  targetMemoryGb?: number;
+  targetBatchSize?: number;
+  targetContextLength?: number;
+}
+
 export interface ModelSpec {
   id: string;
   displayName: string;
@@ -24,6 +38,7 @@ export interface ModelSpec {
   shortDescription: string;
   researchHighlight: string;
   memoryNote: string;
+  inferenceProfiles: InferenceProfile[];
   fixedDtype?: Dtype;
   supportedModes?: Mode[];
 }
@@ -41,6 +56,7 @@ export interface EstimateInput {
   trainingType: TrainingType;
   modelId: string;
   dtype: Dtype;
+  inferenceProfileId: string;
   gpuId: string;
   customVramGb: number;
   contextLength: number;
@@ -94,6 +110,7 @@ export interface EstimateResult {
   effectiveContextLength: number;
   effectiveDtype: Dtype;
   effectiveTrainingType: TrainingType;
+  effectiveInferenceProfileId?: string;
   calculationProfile: string;
   proxyReason?: string;
 }

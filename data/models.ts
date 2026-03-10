@@ -1,4 +1,26 @@
-import type { ModelSpec } from "@/lib/types";
+import type { InferenceProfile, ModelSpec } from "@/lib/types";
+
+function bytesFromCheckpointGb(checkpointGb: number, totalParams: number) {
+  return (checkpointGb * 1_000_000_000) / totalParams;
+}
+
+function directProfile(profile: Omit<InferenceProfile, "official" | "weightMode">): InferenceProfile {
+  return {
+    ...profile,
+    official: true,
+    weightMode: "direct",
+  };
+}
+
+function calibratedProfile(
+  profile: Omit<InferenceProfile, "official" | "weightMode" | "weightBytes">,
+): InferenceProfile {
+  return {
+    ...profile,
+    official: true,
+    weightMode: "calibrated",
+  };
+}
 
 export const models: ModelSpec[] = [
   {
@@ -15,15 +37,27 @@ export const models: ModelSpec[] = [
     numAttentionHeads: 64,
     numKvHeads: 8,
     contextLength: 128_000,
-    vocabSize: 200_000,
+    vocabSize: 201_088,
     license: "Apache 2.0",
     sourceUrl: "https://openai.com/open-models",
     shortDescription:
       "Smaller GPT-OSS reasoning checkpoint with a routed MoE stack, 128K context, and a relatively light active path.",
     researchHighlight:
-      "Alternating full and sliding-window attention keeps long-context attention cost practical inside the routed MoE stack.",
+      "Each MoE block has 32 experts with top-4 routing, and the stack alternates full and sliding-window attention to keep long-context reasoning practical.",
     memoryNote:
-      "MXFP4-style FFN weight compression and sparse routing make the resident footprint materially more practical than a dense 21B-class checkpoint.",
+      "More than 90% of GPT-OSS 20B's parameters sit in MoE weights quantized to MXFP4, while the remaining shared weights stay in BF16.",
+    inferenceProfiles: [
+      calibratedProfile({
+        id: "official-mixed",
+        label: "Official mixed checkpoint",
+        effectiveDtype: "bf16",
+        targetMemoryGb: 16,
+        targetBatchSize: 1,
+        targetContextLength: 4096,
+        sourceUrl: "https://huggingface.co/openai/gpt-oss-20b",
+        note: "OpenAI's official GPT-OSS 20B card says the released checkpoint runs within 16 GB of memory, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
+      }),
+    ],
   },
   {
     id: "gpt-oss-120b",
@@ -34,20 +68,32 @@ export const models: ModelSpec[] = [
     isMoe: true,
     totalParams: 117_000_000_000,
     activeParams: 5_100_000_000,
-    numLayers: 48,
-    hiddenSize: 5120,
-    numAttentionHeads: 80,
+    numLayers: 36,
+    hiddenSize: 2880,
+    numAttentionHeads: 64,
     numKvHeads: 8,
     contextLength: 128_000,
-    vocabSize: 200_000,
+    vocabSize: 201_088,
     license: "Apache 2.0",
     sourceUrl: "https://openai.com/open-models",
     shortDescription:
       "Largest GPT-OSS checkpoint in v0, built for higher-capacity open reasoning with a much larger resident expert pool.",
     researchHighlight:
-      "The same alternating full and sliding-window attention recipe scales to a much deeper MoE stack for long-context throughput.",
+      "Each MoE block has 128 experts with top-4 routing, and the larger model keeps the alternating full and sliding-window attention recipe while staying near 5.1B active params per token.",
     memoryNote:
-      "Active compute stays far below total params, but the much larger resident expert pool still pushes this model firmly into high-VRAM territory.",
+      "More than 90% of GPT-OSS 120B's parameters sit in MXFP4-quantized MoE weights, while the remaining shared weights stay in BF16.",
+    inferenceProfiles: [
+      calibratedProfile({
+        id: "official-mixed",
+        label: "Official mixed checkpoint",
+        effectiveDtype: "bf16",
+        targetMemoryGb: 80,
+        targetBatchSize: 1,
+        targetContextLength: 4096,
+        sourceUrl: "https://huggingface.co/openai/gpt-oss-120b",
+        note: "OpenAI's official GPT-OSS 120B card says the released checkpoint fits a single 80 GB GPU, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
+      }),
+    ],
   },
   {
     id: "llama-3.1-8b",
@@ -71,6 +117,16 @@ export const models: ModelSpec[] = [
       "Grouped-query attention keeps KV state lighter than full multi-head attention while retaining a long native context window.",
     memoryNote:
       "Dense weights dominate the footprint; grouped KV heads help prevent cache growth from exploding at long context.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        sourceUrl: "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct",
+        note: "Meta's official Llama 3.1 8B Instruct release is a BF16 checkpoint with grouped-query attention.",
+      }),
+    ],
   },
   {
     id: "llama-3.1-70b",
@@ -94,6 +150,16 @@ export const models: ModelSpec[] = [
       "Large dense transformer with grouped-query attention and a long 128K context design.",
     memoryNote:
       "Most of the VRAM goes into resident dense weights, so quantization is the key lever for single-GPU inference.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        sourceUrl: "https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct",
+        note: "Meta's official Llama 3.1 70B Instruct release is a BF16 checkpoint with grouped-query attention.",
+      }),
+    ],
   },
   {
     id: "qwen-2.5-7b",
@@ -108,7 +174,7 @@ export const models: ModelSpec[] = [
     numAttentionHeads: 28,
     numKvHeads: 4,
     contextLength: 131_072,
-    vocabSize: 151_936,
+    vocabSize: 152_064,
     license: "Apache 2.0",
     sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct",
     shortDescription:
@@ -117,6 +183,32 @@ export const models: ModelSpec[] = [
       "Long-context Qwen architecture with grouped KV heads to keep inference memory manageable.",
     memoryNote:
       "This is still a dense model, so resident weights set the floor; the compact KV layout mainly helps as context grows.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: bytesFromCheckpointGb(15.2, 7_610_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/tree/main",
+        note: "The official Qwen2.5-7B-Instruct checkpoint repository is about 15.2 GB on Hugging Face.",
+      }),
+      directProfile({
+        id: "official-gptq-int4",
+        label: "Official GPTQ 4-bit checkpoint",
+        effectiveDtype: "int4",
+        weightBytes: bytesFromCheckpointGb(5.59, 7_610_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4/tree/main",
+        note: "The official Qwen2.5-7B-Instruct-GPTQ-Int4 checkpoint repository is about 5.59 GB on Hugging Face.",
+      }),
+      directProfile({
+        id: "official-awq-int4",
+        label: "Official AWQ 4-bit checkpoint",
+        effectiveDtype: "int4",
+        weightBytes: bytesFromCheckpointGb(5.58, 7_610_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/tree/main",
+        note: "The official Qwen2.5-7B-Instruct-AWQ checkpoint repository is about 5.58 GB on Hugging Face.",
+      }),
+    ],
   },
   {
     id: "qwen-2.5-14b",
@@ -126,12 +218,12 @@ export const models: ModelSpec[] = [
     architectureType: "Dense decoder-only transformer",
     isMoe: false,
     totalParams: 14_700_000_000,
-    numLayers: 40,
+    numLayers: 48,
     hiddenSize: 5120,
     numAttentionHeads: 40,
     numKvHeads: 8,
     contextLength: 131_072,
-    vocabSize: 151_936,
+    vocabSize: 152_064,
     license: "Apache 2.0",
     sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct",
     shortDescription:
@@ -140,6 +232,32 @@ export const models: ModelSpec[] = [
       "Scaled Qwen long-context stack with grouped attention and strong dense-model generality.",
     memoryNote:
       "The jump from 7B to 14B is mostly resident weight memory; KV cache remains relatively controlled thanks to grouped KV heads.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: bytesFromCheckpointGb(29.6, 14_700_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct/tree/main",
+        note: "The official Qwen2.5-14B-Instruct checkpoint repository is about 29.6 GB on Hugging Face.",
+      }),
+      directProfile({
+        id: "official-gptq-int4",
+        label: "Official GPTQ 4-bit checkpoint",
+        effectiveDtype: "int4",
+        weightBytes: bytesFromCheckpointGb(10, 14_700_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4/tree/main",
+        note: "The official Qwen2.5-14B-Instruct-GPTQ-Int4 checkpoint repository is about 10 GB on Hugging Face.",
+      }),
+      directProfile({
+        id: "official-awq-int4",
+        label: "Official AWQ 4-bit checkpoint",
+        effectiveDtype: "int4",
+        weightBytes: bytesFromCheckpointGb(10, 14_700_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-AWQ/tree/main",
+        note: "The official Qwen2.5-14B-Instruct-AWQ checkpoint repository is about 10 GB on Hugging Face.",
+      }),
+    ],
   },
   {
     id: "qwen-2.5-32b",
@@ -154,7 +272,7 @@ export const models: ModelSpec[] = [
     numAttentionHeads: 40,
     numKvHeads: 8,
     contextLength: 131_072,
-    vocabSize: 151_936,
+    vocabSize: 152_064,
     license: "Apache 2.0",
     sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct",
     shortDescription:
@@ -163,6 +281,32 @@ export const models: ModelSpec[] = [
       "High-capacity dense Qwen checkpoint optimized for long-context inference rather than sparse routing.",
     memoryNote:
       "Dense resident weights dominate here, which is why 4-bit loading is usually the difference between fitting and not fitting on one card.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: bytesFromCheckpointGb(65.5, 32_500_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct/tree/main",
+        note: "The official Qwen2.5-32B-Instruct checkpoint repository is about 65.5 GB on Hugging Face.",
+      }),
+      directProfile({
+        id: "official-gptq-int4",
+        label: "Official GPTQ 4-bit checkpoint",
+        effectiveDtype: "int4",
+        weightBytes: bytesFromCheckpointGb(19.4, 32_500_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4/tree/main",
+        note: "The official Qwen2.5-32B-Instruct-GPTQ-Int4 checkpoint repository is about 19.4 GB on Hugging Face.",
+      }),
+      directProfile({
+        id: "official-awq-int4",
+        label: "Official AWQ 4-bit checkpoint",
+        effectiveDtype: "int4",
+        weightBytes: bytesFromCheckpointGb(19.3, 32_500_000_000),
+        sourceUrl: "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-AWQ/tree/main",
+        note: "The official Qwen2.5-32B-Instruct-AWQ checkpoint repository is about 19.3 GB on Hugging Face.",
+      }),
+    ],
   },
   {
     id: "gemma-2-9b",
@@ -186,6 +330,16 @@ export const models: ModelSpec[] = [
       "Gemma 2 focuses on efficient dense inference rather than extreme context length.",
     memoryNote:
       "The shorter native context window keeps KV cache moderate, so the main memory driver is still the dense weight tensor.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        sourceUrl: "https://huggingface.co/google/gemma-2-9b-it",
+        note: "Google's official Gemma 2 9B Instruct release is exported in bfloat16.",
+      }),
+    ],
   },
   {
     id: "gemma-2-27b",
@@ -209,6 +363,16 @@ export const models: ModelSpec[] = [
       "Scaled Gemma dense architecture with more capacity per token than the 9B variant.",
     memoryNote:
       "Because the context window is shorter, most VRAM pressure comes from resident weights rather than cache growth.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        sourceUrl: "https://huggingface.co/google/gemma-2-27b-it",
+        note: "Google's official Gemma 2 27B Instruct release is exported in bfloat16.",
+      }),
+    ],
   },
   {
     id: "mistral-nemo-12b",
@@ -232,6 +396,24 @@ export const models: ModelSpec[] = [
       "Long-context dense Mistral design tuned for efficient single-node inference.",
     memoryNote:
       "Dense weights set the baseline footprint; long-context use makes KV cache the next thing to watch after quantization.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: bytesFromCheckpointGb(24.5, 12_200_000_000),
+        sourceUrl: "https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407",
+        note: "Mistral's official consolidated BF16 weights for Mistral Nemo are about 24.5 GB.",
+      }),
+      directProfile({
+        id: "official-fp8",
+        label: "Official FP8 checkpoint",
+        effectiveDtype: "fp8",
+        weightBytes: bytesFromCheckpointGb(13.6, 12_200_000_000),
+        sourceUrl: "https://huggingface.co/mistralai/Mistral-Nemo-Instruct-FP8-2407/tree/main",
+        note: "Mistral's official FP8 checkpoint repository for Mistral Nemo is about 13.6 GB on Hugging Face.",
+      }),
+    ],
   },
   {
     id: "mixtral-8x7b",
@@ -256,6 +438,16 @@ export const models: ModelSpec[] = [
       "Sparse expert routing keeps per-token compute closer to active experts than to total parameters.",
     memoryNote:
       "Even though only a subset of experts is active per token, single-GPU VRAM still carries the resident experts in memory.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        sourceUrl: "https://huggingface.co/mistralai/Mixtral-8x7B-Instruct-v0.1",
+        note: "Mistral's official Mixtral 8x7B release is a BF16 checkpoint.",
+      }),
+    ],
   },
   {
     id: "phi-4-14b",
@@ -268,9 +460,9 @@ export const models: ModelSpec[] = [
     numLayers: 40,
     hiddenSize: 5120,
     numAttentionHeads: 40,
-    numKvHeads: 8,
+    numKvHeads: 10,
     contextLength: 16_384,
-    vocabSize: 100_000,
+    vocabSize: 100_352,
     license: "MIT",
     sourceUrl: "https://huggingface.co/microsoft/phi-4",
     shortDescription:
@@ -279,5 +471,23 @@ export const models: ModelSpec[] = [
       "Reasoning-focused dense architecture aimed at strong capability per parameter rather than sparse routing.",
     memoryNote:
       "With a moderate context window, the model behaves like a classic dense checkpoint where weights dominate and cache stays secondary.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: bytesFromCheckpointGb(29.3, 14_700_000_000),
+        sourceUrl: "https://huggingface.co/microsoft/phi-4/tree/main",
+        note: "Microsoft's official phi-4 repository is about 29.3 GB on Hugging Face.",
+      }),
+      directProfile({
+        id: "official-onnx-int4",
+        label: "Official ONNX INT4 checkpoint",
+        effectiveDtype: "int4",
+        weightBytes: bytesFromCheckpointGb(8.99, 14_700_000_000),
+        sourceUrl: "https://huggingface.co/microsoft/phi-4-onnx/tree/main/gpu/gpu-int4-rtn-block-32",
+        note: "Microsoft's official phi-4 ONNX GPU INT4 checkpoint directory is about 8.99 GB on Hugging Face.",
+      }),
+    ],
   },
 ];

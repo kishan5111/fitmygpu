@@ -46,6 +46,7 @@ export function parseSearchParams(searchParams: SearchParamsLike): EstimateInput
   const mode = read("mode");
   const trainingType = read("train");
   const dtype = read("dtype");
+  const inferenceProfileId = read("profile");
   const modelId = read("model");
   const gpuId = read("gpu");
   const customVramGb = parseNumber(read("vram"), DEFAULT_INPUT.customVramGb);
@@ -58,6 +59,7 @@ export function parseSearchParams(searchParams: SearchParamsLike): EstimateInput
       ? (trainingType as TrainingType)
       : DEFAULT_INPUT.trainingType,
     dtype: dtypeValues.has(dtype as Dtype) ? (dtype as Dtype) : DEFAULT_INPUT.dtype,
+    inferenceProfileId: inferenceProfileId ?? "",
     modelId: modelIds.has(modelId ?? "") ? (modelId as string) : DEFAULT_INPUT.modelId,
     gpuId: gpuIds.has(gpuId ?? "") ? (gpuId as string) : DEFAULT_INPUT.gpuId,
     customVramGb,
@@ -84,6 +86,7 @@ export function serializeEstimateInput(input: EstimateInput): URLSearchParams {
   params.set("train", normalized.trainingType);
   params.set("model", normalized.modelId);
   params.set("dtype", normalized.dtype);
+  params.set("profile", normalized.inferenceProfileId);
   params.set("gpu", normalized.gpuId);
   params.set("vram", normalized.customVramGb.toString());
   params.set("ctx", normalized.contextLength.toString());

@@ -11,7 +11,11 @@ import {
   formatInteger,
   formatParamCount,
 } from "@/lib/format";
-import { applyModelConstraints, getModelSpec } from "@/lib/model-constraints";
+import {
+  applyModelConstraints,
+  getInferenceProfile,
+  getModelSpec,
+} from "@/lib/model-constraints";
 import { normalizeEstimateInput } from "@/lib/query-state";
 import type {
   BreakdownItem,
@@ -19,6 +23,7 @@ import type {
   EstimateInput,
   EstimateResult,
   GpuSpec,
+  InferenceProfile,
   MathLine,
   ModelSpec,
   TrainingType,
@@ -35,6 +40,8 @@ type Strategy =
       weightBytes: number;
       kvBytes: number;
       warnings: string[];
+      weightNote?: string;
+      effectiveInferenceProfileId: string;
       proxyReason?: string;
     }
   | {
@@ -72,11 +79,15 @@ export function estimateVram(input: EstimateInput): EstimateResult {
     );
   }
 
-  const strategy = resolveStrategy(normalized);
+  const strategy = resolveStrategy(normalized, model);
   warnings.push(...strategy.warnings);
 
   if (strategy.proxyReason) {
     notes.push(strategy.proxyReason);
+  }
+
+  if (strategy.mode === "inference" && strategy.weightNote) {
+    notes.push(strategy.weightNote);
   }
 
   if (model.fixedDtype) {
@@ -155,7 +166,7 @@ function buildInferenceEstimate(
       bytes: weightsBytes,
       note: `${formatParamCount(model.totalParams)} resident parameters at ${formatBytesPerParam(
         strategy.weightBytes,
-      )} bytes each.`,
+      )} bytes each.${strategy.weightNote ? " Calibrated from the official checkpoint profile." : ""}`,
     },
     {
       key: "kvCache",
@@ -180,7 +191,9 @@ function buildInferenceEstimate(
       substituted: `${formatParamCount(model.totalParams)} × ${formatBytesPerParam(
         strategy.weightBytes,
       )} = ${formatGb(weightsBytes)}`,
-      note: `${formatDtype(strategy.effectiveDtype)} controls how compact the resident weights are.`,
+      note:
+        strategy.weightNote ??
+        `${formatDtype(strategy.effectiveDtype)} controls how compact the resident weights are.`,
     },
     {
       label: "KV cache",
@@ -216,6 +229,7 @@ function buildInferenceEstimate(
     math,
     effectiveDtype: strategy.effectiveDtype,
     effectiveTrainingType: strategy.effectiveTrainingType,
+    effectiveInferenceProfileId: strategy.effectiveInferenceProfileId,
     calculationProfile: strategy.calculationProfile,
     proxyReason: strategy.proxyReason,
   };
@@ -425,6 +439,7 @@ function buildTrainingEstimate(
     math,
     effectiveDtype: strategy.effectiveDtype,
     effectiveTrainingType: strategy.effectiveTrainingType,
+    effectiveInferenceProfileId: undefined,
     calculationProfile: strategy.calculationProfile,
     proxyReason: strategy.proxyReason,
   };
@@ -541,16 +556,38 @@ function generateTips(args: {
   return Array.from(new Set(tips)).slice(0, 4);
 }
 
-function resolveStrategy(input: EstimateInput): Strategy {
+function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
   if (input.mode === "inference") {
+    const profile = getInferenceProfile(model, input.inferenceProfileId, input.dtype);
+    const warnings: string[] = [];
+    let proxyReason: string | undefined;
+    let weightNote = profile.note;
+
+    if (!profile.official) {
+      warnings.push(
+        `${profile.label} is a proxy estimate, not an official ${model.displayName} checkpoint profile.`,
+      );
+      proxyReason = `${model.displayName} does not ship this exact checkpoint profile. The estimate is using a generic ${profile.label.toLowerCase()} fallback instead of an official release artifact.`;
+    } else if (profile.weightMode === "calibrated") {
+      weightNote = `${profile.note} The estimator back-solves an effective resident bytes-per-parameter value using a reference batch of ${profile.targetBatchSize ?? 1} and context of ${formatInteger(
+        profile.targetContextLength ?? 0,
+      )} tokens, then adds KV cache and runtime overhead for your actual batch and context settings.`;
+    }
+
     return {
       mode: "inference",
-      effectiveDtype: input.dtype,
+      effectiveDtype: profile.effectiveDtype,
       effectiveTrainingType: input.trainingType,
-      calculationProfile: `${formatDtype(input.dtype)} inference`,
-      weightBytes: getInferenceWeightBytes(input.dtype),
+      effectiveInferenceProfileId: profile.id,
+      calculationProfile: profile.label,
+      weightBytes:
+        profile.weightMode === "calibrated"
+          ? solveOfficialInferenceWeightBytes(model, profile)
+          : profile.weightBytes ?? getInferenceWeightBytes(profile.effectiveDtype),
       kvBytes: 2,
-      warnings: [],
+      warnings,
+      weightNote,
+      proxyReason,
     };
   }
 
@@ -655,6 +692,39 @@ function resolveStrategy(input: EstimateInput): Strategy {
     proxyReason:
       "GRPO is modeled as QLoRA-style adapter training plus extra rollout memory so the estimate stays conservative and explainable in v0.",
   };
+}
+
+function solveOfficialInferenceWeightBytes(
+  model: ModelSpec,
+  profile: InferenceProfile,
+) {
+  if (profile.targetMemoryGb === undefined) {
+    throw new Error(`Calibrated profile ${profile.id} is missing targetMemoryGb.`);
+  }
+
+  const targetTotalBytes = profile.targetMemoryGb * DECIMAL_GB;
+  const targetBatchSize = profile.targetBatchSize ?? 1;
+  const targetContextLength = profile.targetContextLength ?? 0;
+  const kvHeads = model.numKvHeads ?? model.numAttentionHeads;
+  const headDim = model.hiddenSize / model.numAttentionHeads;
+  const kvBytes =
+    targetBatchSize *
+    targetContextLength *
+    model.numLayers *
+    2 *
+    kvHeads *
+    headDim *
+    2;
+  const percentOverheadWeightBytes =
+    (targetTotalBytes / 1.1 - kvBytes) / model.totalParams;
+  const subtotalWithPercentOverhead =
+    model.totalParams * percentOverheadWeightBytes + kvBytes;
+
+  if (subtotalWithPercentOverhead * 0.1 >= 1.5 * DECIMAL_GB) {
+    return percentOverheadWeightBytes;
+  }
+
+  return (targetTotalBytes - kvBytes - 1.5 * DECIMAL_GB) / model.totalParams;
 }
 
 function getInferenceWeightBytes(dtype: Dtype): number {

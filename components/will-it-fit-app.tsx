@@ -24,7 +24,12 @@ import {
   formatParamCount,
 } from "@/lib/format";
 import { estimateVram } from "@/lib/estimator";
-import { applyModelConstraints, modelSupportsMode } from "@/lib/model-constraints";
+import {
+  applyModelConstraints,
+  getInferenceProfile,
+  getInferenceProfiles,
+  modelSupportsMode,
+} from "@/lib/model-constraints";
 import { normalizeEstimateInput, serializeEstimateInput } from "@/lib/query-state";
 import type { EstimateInput, EstimateResult, Mode, ModelSpec } from "@/lib/types";
 
@@ -45,9 +50,18 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
   const [formState, setFormState] = useState(initialInput);
   const [result, setResult] = useState<EstimateResult | null>(initialResult);
   const selectedModel = models.find((model) => model.id === formState.modelId) ?? models[0];
+  const selectedInferenceProfile = getInferenceProfile(
+    selectedModel,
+    formState.inferenceProfileId,
+    formState.dtype,
+  );
   const modelOptions = models.map((model) => ({
     label: model.displayName,
     value: model.id,
+  }));
+  const inferenceProfileOptions = getInferenceProfiles(selectedModel).map((profile) => ({
+    label: profile.label,
+    value: profile.id,
   }));
   const dtypeFieldOptions = dtypeOptions.map((option) => ({
     label: option.label,
@@ -100,6 +114,18 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
 
   function handleModeChange(nextMode: Mode) {
     setFormState((current) => applyModelConstraints({ ...current, mode: nextMode }));
+  }
+
+  function handleInferenceProfileChange(profileId: string) {
+    const profile = getInferenceProfile(selectedModel, profileId, formState.dtype);
+
+    setFormState((current) =>
+      applyModelConstraints({
+        ...current,
+        dtype: profile.effectiveDtype,
+        inferenceProfileId: profile.id,
+      }),
+    );
   }
 
   function handleNumberChange<K extends "contextLength" | "batchSize" | "customVramGb">(
@@ -161,13 +187,28 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             </div>
 
             <div className="space-y-3">
-              <FieldLabel label="Dtype / quantization" />
-              <SelectField
-                disabled={Boolean(selectedModel.fixedDtype)}
-                onChange={(value) => updateField("dtype", value as EstimateInput["dtype"])}
-                options={dtypeFieldOptions}
-                value={formState.dtype}
+              <FieldLabel
+                label={
+                  formState.mode === "inference"
+                    ? "Checkpoint profile"
+                    : "Dtype / quantization"
+                }
               />
+              {formState.mode === "inference" ? (
+                <SelectField
+                  disabled={Boolean(selectedModel.fixedDtype)}
+                  onChange={handleInferenceProfileChange}
+                  options={inferenceProfileOptions}
+                  value={selectedInferenceProfile.id}
+                />
+              ) : (
+                <SelectField
+                  disabled={Boolean(selectedModel.fixedDtype)}
+                  onChange={(value) => updateField("dtype", value as EstimateInput["dtype"])}
+                  options={dtypeFieldOptions}
+                  value={formState.dtype}
+                />
+              )}
             </div>
 
             <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
@@ -178,6 +219,13 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
               <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
                 This checkpoint is fixed to {formatDtype(selectedModel.fixedDtype)} in
                 v0.
+              </p>
+            ) : null}
+
+            {formState.mode === "inference" ? (
+              <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
+                {selectedInferenceProfile.official ? "Official" : "Proxy"} profile:{" "}
+                {selectedInferenceProfile.label}. {selectedInferenceProfile.note}
               </p>
             ) : null}
 

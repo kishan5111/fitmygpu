@@ -35,6 +35,7 @@ export const DEFAULT_INPUT: EstimateInput = {
   trainingType: "sft",
   modelId: models[0].id,
   dtype: "fp16",
+  inferenceProfileId: models[0].inferenceProfiles[0]?.id ?? "",
   gpuId: gpus[1].id,
   customVramGb: 24,
   contextLength: 4096,

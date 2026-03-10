@@ -8,6 +8,7 @@ function buildInput(overrides: Partial<EstimateInput> = {}): EstimateInput {
     trainingType: "sft",
     modelId: "llama-3.1-8b",
     dtype: "fp16",
+    inferenceProfileId: "",
     gpuId: "rtx-4090-24gb",
     customVramGb: 24,
     contextLength: 4096,
@@ -82,6 +83,43 @@ describe("estimateVram", () => {
 
     expect(result.weightsBytes).toBeCloseTo(mixtral!.totalParams * 2, -1);
     expect(result.weightsBytes).toBeGreaterThan((mixtral!.activeParams ?? 0) * 2);
+  });
+
+  it("uses the native GPT-OSS checkpoint profile for fp16/bf16-style inference", () => {
+    const gptOss20B = estimateVram(
+      buildInput({
+        modelId: "gpt-oss-20b",
+        dtype: "fp16",
+        gpuId: "rtx-4090-24gb",
+      }),
+    );
+    const gptOss120B = estimateVram(
+      buildInput({
+        modelId: "gpt-oss-120b",
+        dtype: "bf16",
+        gpuId: "h100-80gb",
+      }),
+    );
+
+    expect(gptOss20B.calculationProfile).toBe("Official mixed checkpoint");
+    expect(gptOss20B.fits).toBe(true);
+    expect(gptOss20B.weightsBytes / 1_000_000_000).toBeLessThan(16);
+
+    expect(gptOss120B.calculationProfile).toBe("Official mixed checkpoint");
+    expect(gptOss120B.fits).toBe(true);
+    expect(gptOss120B.weightsBytes / 1_000_000_000).toBeLessThan(80);
+  });
+
+  it("warns when a GPT-OSS inference run is treated as a requantized proxy", () => {
+    const proxy = estimateVram(
+      buildInput({
+        modelId: "gpt-oss-20b",
+        dtype: "int4",
+      }),
+    );
+
+    expect(proxy.calculationProfile).toBe("Proxy 4-bit estimate");
+    expect(proxy.warnings.join(" ")).toMatch(/proxy estimate|official/i);
   });
 
   it("proxies unsupported training + quantization combinations with warnings", () => {
@@ -164,9 +202,11 @@ describe("estimateVram", () => {
           "gradientsGb": 0,
           "kvGb": 1.3,
           "optimizerGb": 0,
-          "profile": "4-bit inference",
+          "profile": "Proxy 4-bit estimate",
           "totalGb": 44.2,
-          "warnings": [],
+          "warnings": [
+            "Proxy 4-bit estimate is a proxy estimate, not an official Llama 3.1 70B checkpoint profile.",
+          ],
           "weightsGb": 38.8,
         },
         "inference7B24Gb": {
@@ -175,7 +215,7 @@ describe("estimateVram", () => {
           "gradientsGb": 0,
           "kvGb": 0.2,
           "optimizerGb": 0,
-          "profile": "FP16 inference",
+          "profile": "Official BF16 checkpoint",
           "totalGb": 17,
           "warnings": [],
           "weightsGb": 15.2,
@@ -186,7 +226,7 @@ describe("estimateVram", () => {
           "gradientsGb": 0,
           "kvGb": 0.5,
           "optimizerGb": 0,
-          "profile": "FP16 inference",
+          "profile": "Official BF16 checkpoint",
           "totalGb": 103.3,
           "warnings": [],
           "weightsGb": 93.4,
