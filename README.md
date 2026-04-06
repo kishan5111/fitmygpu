@@ -1,7 +1,7 @@
 # FitMyGPU
 
 FitMyGPU helps you estimate whether a model will fit on a specific GPU before you download or run it.
-It focuses on clear VRAM estimates, readable memory breakdowns, and model-aware notes that explain why a checkpoint behaves the way it does.
+It focuses on clear runtime-aware VRAM estimates, readable memory breakdowns, and model-aware notes that explain why a checkpoint behaves the way it does.
 The goal is a calm technical tool that answers the fit question quickly without turning into a dashboard.
 
 ## Preview
@@ -12,17 +12,19 @@ The goal is a calm technical tool that answers the fit question quickly without 
 
 FitMyGPU is a focused web tool for one question: will a selected model fit on a selected GPU?
 
-Instead of acting like a dashboard, it stays narrow and useful. You pick a model, dtype, and GPU, and the app estimates the memory footprint for inference or training, shows where the memory goes, and gives a fast fit verdict with practical suggestions.
+Instead of acting like a dashboard, it stays narrow and useful. You pick a model, runtime, checkpoint profile, and GPU, and the app estimates the memory footprint for single-GPU text inference, shows where the memory goes, and gives a fast fit verdict with practical suggestions.
 
 The project is intentionally model-aware. Each supported model can carry architecture details, a research highlight, and a memory note so the UI teaches something real about why that checkpoint behaves the way it does in memory.
 
 ## Features
 
 - Clean single-page VRAM calculator with a calm, high-trust UI
-- Deterministic memory estimates for inference and training workflows
-- Memory breakdown across weights, KV cache, activations, gradients, optimizer state, and overhead
+- Runtime-aware fit presets for `transformers` and `vllm`
+- Deterministic memory estimates for single-GPU text inference workflows
+- Memory breakdown across weights, KV cache, and runtime overhead
 - Compact formula view that explains how the estimate is calculated
 - Model-specific notes via `researchHighlight` and `memoryNote`
+- Text-only support for multimodal checkpoints, with resident vision weights still counted
 - Shareable URL state for calculator inputs and results
 - Curated local model registry instead of a noisy unfiltered model list
 
@@ -30,7 +32,7 @@ The project is intentionally model-aware. Each supported model can carry archite
 
 The registry is designed to keep growing. As new model families and checkpoints are added, FitMyGPU will also update the model-specific notes, architecture highlights, and memory guidance for them.
 
-This is especially important for newer releases where architecture choices directly affect VRAM behavior, such as MoE routing, grouped KV heads, FP8 checkpoints, or compressed weight formats.
+This is especially important for newer releases where architecture choices directly affect VRAM behavior, such as MoE routing, grouped KV heads, hybrid-attention layers, FP8 checkpoints, or compressed weight formats.
 
 ## Support
 

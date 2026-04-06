@@ -4,7 +4,8 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "FitMyGPU",
     short_name: "FitMyGPU",
-    description: "Estimate GPU VRAM for model inference and training.",
+    description:
+      "Estimate single-GPU text inference VRAM across Transformers and vLLM.",
     start_url: "/",
     display: "standalone",
     background_color: "#f6f0e8",

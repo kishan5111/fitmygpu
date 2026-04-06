@@ -1,4 +1,5 @@
 import { models } from "@/data/models";
+import { TRAINING_ENABLED } from "@/lib/constants";
 import { estimateVram } from "@/lib/estimator";
 import type { EstimateInput } from "@/lib/types";
 
@@ -6,6 +7,8 @@ function buildInput(overrides: Partial<EstimateInput> = {}): EstimateInput {
   return {
     mode: "inference",
     trainingType: "sft",
+    runtimeId: "transformers",
+    kvCacheDtype: "bf16",
     modelId: "llama-3.1-8b",
     dtype: "fp16",
     inferenceProfileId: "",
@@ -21,12 +24,16 @@ function buildInput(overrides: Partial<EstimateInput> = {}): EstimateInput {
 
 function summarize(result: ReturnType<typeof estimateVram>) {
   return {
+    runtime: result.runtime.label,
     profile: result.calculationProfile,
     fits: result.fits,
+    maxConcurrency: result.maxConcurrencyAtContext ?? null,
     totalGb: Number((result.totalBytes / 1_000_000_000).toFixed(1)),
+    requiredGb: Number((result.requiredGpuBytes / 1_000_000_000).toFixed(1)),
     weightsGb: Number((result.weightsBytes / 1_000_000_000).toFixed(1)),
     masterGb: Number((result.masterWeightsBytes / 1_000_000_000).toFixed(1)),
     kvGb: Number((result.kvCacheBytes / 1_000_000_000).toFixed(1)),
+    linearStateGb: Number((result.linearStateBytes / 1_000_000_000).toFixed(3)),
     activationsGb: Number((result.activationsBytes / 1_000_000_000).toFixed(1)),
     gradientsGb: Number((result.gradientsBytes / 1_000_000_000).toFixed(1)),
     optimizerGb: Number((result.optimizerBytes / 1_000_000_000).toFixed(1)),
@@ -36,30 +43,33 @@ function summarize(result: ReturnType<typeof estimateVram>) {
 
 describe("estimateVram", () => {
   it("increases monotonically with context and batch during inference", () => {
-    const base = estimateVram(buildInput());
-    const longerContext = estimateVram(buildInput({ contextLength: 8192 }));
-    const biggerBatch = estimateVram(buildInput({ batchSize: 2 }));
+    const base = estimateVram(buildInput({ runtimeId: "vllm" }));
+    const longerContext = estimateVram(
+      buildInput({ runtimeId: "vllm", contextLength: 8192 }),
+    );
+    const biggerBatch = estimateVram(buildInput({ runtimeId: "vllm", batchSize: 2 }));
 
     expect(longerContext.totalBytes).toBeGreaterThan(base.totalBytes);
     expect(biggerBatch.totalBytes).toBeGreaterThan(base.totalBytes);
   });
 
-  it("keeps activation memory aligned across SFT, LoRA, and QLoRA", () => {
-    const sft = estimateVram(
+  it("pins transformers to the fixed single-request baseline", () => {
+    const result = estimateVram(
       buildInput({
-        mode: "training",
-        trainingType: "sft",
-        dtype: "bf16",
+        runtimeId: "transformers",
+        contextLength: 32768,
+        batchSize: 8,
       }),
     );
-    const lora = estimateVram(
-      buildInput({
-        mode: "training",
-        trainingType: "lora",
-        dtype: "bf16",
-      }),
-    );
-    const qlora = estimateVram(
+
+    expect(result.input.contextLength).toBe(4096);
+    expect(result.input.batchSize).toBe(1);
+    expect(result.maxConcurrencyAtContext).toBeUndefined();
+    expect(result.runtimeNotes.join(" ")).toMatch(/single-request baseline|4K context/i);
+  });
+
+  it("forces training requests back to inference while training is disabled", () => {
+    const result = estimateVram(
       buildInput({
         mode: "training",
         trainingType: "qlora",
@@ -67,9 +77,10 @@ describe("estimateVram", () => {
       }),
     );
 
-    expect(qlora.weightsBytes).toBeLessThan(lora.weightsBytes);
-    expect(lora.activationsBytes).toBeCloseTo(sft.activationsBytes, -1);
-    expect(qlora.activationsBytes).toBeCloseTo(sft.activationsBytes, -1);
+    expect(TRAINING_ENABLED).toBe(false);
+    expect(result.input.mode).toBe("inference");
+    expect(result.kvCacheBytes).toBeGreaterThan(0);
+    expect(result.activationsBytes).toBe(0);
   });
 
   it("uses total params rather than active params for MoE resident weights", () => {
@@ -123,29 +134,162 @@ describe("estimateVram", () => {
     expect(proxy.warnings.join(" ")).toMatch(/proxy estimate|official/i);
   });
 
-  it("proxies unsupported training + quantization combinations with warnings", () => {
-    const sftInt4 = estimateVram(
+  it("uses a reduced executor budget for vllm", () => {
+    const transformersResult = estimateVram(
       buildInput({
-        mode: "training",
-        trainingType: "sft",
-        dtype: "int4",
+        runtimeId: "transformers",
+        modelId: "qwen-2.5-7b",
+        gpuId: "custom",
+        customVramGb: 17.5,
       }),
     );
-    const loraInt4 = estimateVram(
+    const vllmResult = estimateVram(
       buildInput({
-        mode: "training",
-        trainingType: "lora",
-        dtype: "int4",
+        runtimeId: "vllm",
+        modelId: "qwen-2.5-7b",
+        gpuId: "custom",
+        customVramGb: 17.5,
       }),
     );
 
-    expect(sftInt4.calculationProfile).toBe("BF16 SFT proxy");
-    expect(sftInt4.warnings.join(" ")).toMatch(/BF16 SFT proxy|BF16/);
-    expect(loraInt4.calculationProfile).toBe("QLoRA proxy");
-    expect(loraInt4.warnings.join(" ")).toMatch(/QLoRA proxy|QLoRA/);
+    expect(transformersResult.totalBytes).toBe(vllmResult.totalBytes);
+    expect(transformersResult.requiredGpuBytes).toBe(transformersResult.totalBytes);
+    expect(vllmResult.requiredGpuBytes).toBeCloseTo(vllmResult.totalBytes / 0.9, -1);
+    expect(vllmResult.requiredGpuBytes).toBeGreaterThan(transformersResult.requiredGpuBytes);
+    expect(transformersResult.fits).toBe(true);
+    expect(vllmResult.fits).toBe(false);
+    expect(vllmResult.runtimeNotes.join(" ")).toMatch(/0.9|90%/i);
   });
 
-  it("matches the canonical scenarios snapshot", () => {
+  it("treats nominal GPU VRAM labels as binary frame-buffer sizes", () => {
+    const result = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "gpt-oss-120b",
+        kvCacheDtype: "bf16",
+        gpuId: "h100-80gb",
+        contextLength: 8192,
+      }),
+    );
+
+    expect(result.gpuBytes).toBe(80 * 1024 * 1024 * 1024);
+    expect(result.requiredGpuBytes).toBeLessThan(result.gpuBytes);
+    expect(result.fits).toBe(true);
+  });
+
+  it("lets FP8 KV cache reduce runtime memory for vllm", () => {
+    const vllmBf16 = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        kvCacheDtype: "bf16",
+        modelId: "qwen-2.5-32b",
+        inferenceProfileId: "official-gptq-int4",
+        dtype: "int4",
+        contextLength: 32768,
+        batchSize: 2,
+        gpuId: "h100-80gb",
+      }),
+    );
+    const vllmFp8 = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        kvCacheDtype: "fp8",
+        modelId: "qwen-2.5-32b",
+        inferenceProfileId: "official-gptq-int4",
+        dtype: "int4",
+        contextLength: 32768,
+        batchSize: 2,
+        gpuId: "h100-80gb",
+      }),
+    );
+
+    expect(vllmFp8.weightsBytes).toBe(vllmBf16.weightsBytes);
+    expect(vllmFp8.kvCacheBytes).toBeCloseTo(vllmBf16.kvCacheBytes / 2, -1);
+    expect(vllmFp8.totalBytes).toBeLessThan(vllmBf16.totalBytes);
+    expect(vllmFp8.requiredGpuBytes).toBeLessThan(vllmBf16.requiredGpuBytes);
+    expect(vllmFp8.notes.join(" ")).toMatch(/FP8|scaling/i);
+    expect(vllmBf16.maxConcurrencyAtContext).toBeGreaterThanOrEqual(1);
+  });
+
+  it("uses attention-bearing layers for Qwen3.5 KV cache math", () => {
+    const result = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "qwen-3.5-4b",
+        dtype: "bf16",
+        contextLength: 4096,
+      }),
+    );
+    const longerContext = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "qwen-3.5-4b",
+        dtype: "bf16",
+        contextLength: 8192,
+      }),
+    );
+    const biggerBatch = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "qwen-3.5-4b",
+        dtype: "bf16",
+        batchSize: 2,
+      }),
+    );
+    const hybridExpectedKv =
+      1 * 4096 * 8 * 2 * 4 * 256 * 2;
+    const denseEquivalentKv =
+      1 * 4096 * 32 * 2 * 4 * 256 * 2;
+
+    expect(result.model.cacheStrategy).toBe("hybrid_attention");
+    expect(result.model.attentionLayerCount).toBe(8);
+    expect(result.linearStateBytes).toBeGreaterThan(0);
+    expect(result.kvCacheBytes).toBe(hybridExpectedKv);
+    expect(result.kvCacheBytes).toBeLessThan(denseEquivalentKv);
+    expect(longerContext.linearStateBytes).toBe(result.linearStateBytes);
+    expect(biggerBatch.linearStateBytes).toBe(result.linearStateBytes * 2);
+    expect(longerContext.totalBytes).toBeGreaterThan(result.totalBytes);
+    expect(biggerBatch.totalBytes).toBeGreaterThan(result.totalBytes);
+  });
+
+  it("treats multimodal checkpoints as text-only estimates while keeping resident weights", () => {
+    const qwen = models.find((model) => model.id === "qwen-3.5-9b");
+    expect(qwen).toBeDefined();
+
+    const result = estimateVram(
+      buildInput({
+        modelId: "qwen-3.5-9b",
+        dtype: "bf16",
+      }),
+    );
+
+    expect(result.model.modality).toBe("multimodal");
+    expect(result.weightsBytes).toBe(qwen!.totalParams * 2);
+    expect(result.linearStateBytes).toBeGreaterThan(0);
+    expect(result.notes.join(" ")).toMatch(/text-only|vision|projector/i);
+  });
+
+  it("models GPT-OSS alternating sliding-window attention instead of charging every layer at full context", () => {
+    const result = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        kvCacheDtype: "fp8",
+        modelId: "gpt-oss-120b",
+        contextLength: 65536,
+      }),
+    );
+    const alternatingExpectedKv =
+      (18 * 65536 + 18 * 128) * 2 * 8 * 64 * 1;
+    const denseEquivalentKv =
+      36 * 65536 * 2 * 8 * 64 * 1;
+
+    expect(result.model.cacheStrategy).toBe("alternating_window_attention");
+    expect(result.kvCacheBytes).toBe(alternatingExpectedKv);
+    expect(result.kvCacheBytes).toBeLessThan(denseEquivalentKv);
+    expect(result.notes.join(" ")).toMatch(/sliding-window|128-token cache/i);
+  });
+
+  it("matches the canonical inference scenarios snapshot", () => {
     const scenarios = {
       inference7B24Gb: summarize(
         estimateVram(
@@ -165,31 +309,41 @@ describe("estimateVram", () => {
           }),
         ),
       ),
-      sft7BBf1624Gb: summarize(
-        estimateVram(
-          buildInput({
-            mode: "training",
-            trainingType: "sft",
-            modelId: "qwen-2.5-7b",
-            dtype: "bf16",
-          }),
-        ),
-      ),
-      qlora7B24Gb: summarize(
-        estimateVram(
-          buildInput({
-            mode: "training",
-            trainingType: "qlora",
-            modelId: "qwen-2.5-7b",
-            dtype: "int4",
-          }),
-        ),
-      ),
       mixtral24Gb: summarize(
         estimateVram(
           buildInput({
             modelId: "mixtral-8x7b",
             dtype: "fp16",
+          }),
+        ),
+      ),
+      qwen35Transformers: summarize(
+        estimateVram(
+          buildInput({
+            runtimeId: "transformers",
+            modelId: "qwen-3.5-4b",
+            dtype: "bf16",
+          }),
+        ),
+      ),
+      qwen35Vllm: summarize(
+        estimateVram(
+          buildInput({
+            runtimeId: "vllm",
+            kvCacheDtype: "bf16",
+            modelId: "qwen-3.5-4b",
+            dtype: "bf16",
+          }),
+        ),
+      ),
+      nemotronVllm: summarize(
+        estimateVram(
+          buildInput({
+            runtimeId: "vllm",
+            kvCacheDtype: "bf16",
+            modelId: "openreasoning-nemotron-14b",
+            dtype: "bf16",
+            gpuId: "a100-40gb",
           }),
         ),
       ),
@@ -202,9 +356,13 @@ describe("estimateVram", () => {
           "fits": true,
           "gradientsGb": 0,
           "kvGb": 1.3,
+          "linearStateGb": 0,
           "masterGb": 0,
+          "maxConcurrency": null,
           "optimizerGb": 0,
           "profile": "Proxy 4-bit estimate",
+          "requiredGb": 44.2,
+          "runtime": "Transformers",
           "totalGb": 44.2,
           "warnings": [
             "Proxy 4-bit estimate is a proxy estimate, not an official Llama 3.1 70B checkpoint profile.",
@@ -216,9 +374,13 @@ describe("estimateVram", () => {
           "fits": true,
           "gradientsGb": 0,
           "kvGb": 0.2,
+          "linearStateGb": 0,
           "masterGb": 0,
+          "maxConcurrency": null,
           "optimizerGb": 0,
           "profile": "Official BF16 checkpoint",
+          "requiredGb": 17,
+          "runtime": "Transformers",
           "totalGb": 17,
           "warnings": [],
           "weightsGb": 15.2,
@@ -228,37 +390,99 @@ describe("estimateVram", () => {
           "fits": false,
           "gradientsGb": 0,
           "kvGb": 0.5,
+          "linearStateGb": 0,
           "masterGb": 0,
+          "maxConcurrency": null,
           "optimizerGb": 0,
           "profile": "Official BF16 checkpoint",
+          "requiredGb": 103.3,
+          "runtime": "Transformers",
           "totalGb": 103.3,
           "warnings": [],
           "weightsGb": 93.4,
         },
-        "qlora7B24Gb": {
-          "activationsGb": 9.9,
+        "nemotronVllm": {
+          "activationsGb": 0,
           "fits": true,
           "gradientsGb": 0,
-          "kvGb": 0,
-          "masterGb": 0.1,
-          "optimizerGb": 0.1,
-          "profile": "QLoRA",
-          "totalGb": 16.3,
+          "kvGb": 0.8,
+          "linearStateGb": 0,
+          "masterGb": 0,
+          "maxConcurrency": 7,
+          "optimizerGb": 0,
+          "profile": "Official BF16 checkpoint",
+          "requiredGb": 36.9,
+          "runtime": "vLLM",
+          "totalGb": 33.2,
           "warnings": [],
-          "weightsGb": 4.2,
+          "weightsGb": 29.4,
         },
-        "sft7BBf1624Gb": {
-          "activationsGb": 9.9,
-          "fits": false,
-          "gradientsGb": 15.2,
-          "kvGb": 0,
-          "masterGb": 30.4,
-          "optimizerGb": 60.9,
-          "profile": "BF16 SFT",
-          "totalGb": 144.8,
+        "qwen35Transformers": {
+          "activationsGb": 0,
+          "fits": true,
+          "gradientsGb": 0,
+          "kvGb": 0.1,
+          "linearStateGb": 0.053,
+          "masterGb": 0,
+          "maxConcurrency": null,
+          "optimizerGb": 0,
+          "profile": "Official BF16 checkpoint",
+          "requiredGb": 11.7,
+          "runtime": "Transformers",
+          "totalGb": 11.7,
           "warnings": [],
-          "weightsGb": 15.2,
+          "weightsGb": 10,
         },
+        "qwen35Vllm": {
+          "activationsGb": 0,
+          "fits": true,
+          "gradientsGb": 0,
+          "kvGb": 0.1,
+          "linearStateGb": 0.053,
+          "masterGb": 0,
+          "maxConcurrency": 59,
+          "optimizerGb": 0,
+          "profile": "Official BF16 checkpoint",
+          "requiredGb": 13,
+          "runtime": "vLLM",
+          "totalGb": 11.7,
+          "warnings": [],
+          "weightsGb": 10,
+        },
+      }
+    `);
+  });
+
+  it("clips excessive context length while preserving inference behavior", () => {
+    expect(
+      summarize(
+        estimateVram(
+          buildInput({
+            runtimeId: "vllm",
+            modelId: "gpt-oss-120b",
+            contextLength: 256000,
+            gpuId: "h100-80gb",
+          }),
+        ),
+      ),
+    ).toMatchInlineSnapshot(`
+      {
+        "activationsGb": 0,
+        "fits": true,
+        "gradientsGb": 0,
+        "kvGb": 4.7,
+        "linearStateGb": 0,
+        "masterGb": 0,
+        "maxConcurrency": 1,
+        "optimizerGb": 0,
+        "profile": "Mixed MXFP4 + BF16 checkpoint",
+        "requiredGb": 85.6,
+        "runtime": "vLLM",
+        "totalGb": 77,
+        "warnings": [
+          "Context clipped to 128,000 tokens, the model's advertised window.",
+        ],
+        "weightsGb": 65.3,
       }
     `);
   });

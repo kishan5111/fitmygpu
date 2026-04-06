@@ -5,7 +5,8 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL("https://fitmygpu.com"),
   title: "Will It Fit? | FitMyGPU",
-  description: "Estimate GPU VRAM for model inference and training.",
+  description:
+    "Estimate single-GPU text inference VRAM across Transformers and vLLM.",
   alternates: {
     canonical: "/",
   },

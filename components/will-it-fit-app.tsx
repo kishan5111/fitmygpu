@@ -8,30 +8,36 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { DetailRow } from "@/components/detail-row";
+import { ModelSpecGrid } from "@/components/model-spec-grid";
 import { gpus } from "@/data/gpus";
 import { models } from "@/data/models";
-import {
-  dtypeOptions,
-  modeOptions,
-  trainingTypeOptions,
-} from "@/lib/constants";
 import {
   formatBandwidth,
   formatDtype,
   formatGb,
   formatInteger,
-  formatParamCount,
 } from "@/lib/format";
 import { estimateVram } from "@/lib/estimator";
 import {
   applyModelConstraints,
-  getInferenceProfile,
-  getInferenceProfiles,
-  modelSupportsMode,
+  getCompatibleInferenceProfile,
+  getCompatibleInferenceProfiles,
+  getInferenceProfileSourceUrl,
 } from "@/lib/model-constraints";
+import {
+  formatModelAtGlance,
+  isMultimodalModel,
+} from "@/lib/model-display";
+import {
+  kvCacheDtypeOptions,
+  runtimeOptions,
+  runtimeSupportsKvCacheDtype,
+} from "@/lib/runtime";
 import { normalizeEstimateInput, serializeEstimateInput } from "@/lib/query-state";
-import type { EstimateInput, EstimateResult, Mode, ModelSpec } from "@/lib/types";
+import type { EstimateInput, EstimateResult, ModelSpec } from "@/lib/types";
 
 type Props = {
   initialInput: EstimateInput;
@@ -50,35 +56,42 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
   const [formState, setFormState] = useState(initialInput);
   const [result, setResult] = useState<EstimateResult | null>(initialResult);
   const selectedModel = models.find((model) => model.id === formState.modelId) ?? models[0];
-  const selectedInferenceProfile = getInferenceProfile(
+  const compatibleInferenceProfiles = getCompatibleInferenceProfiles(
     selectedModel,
+    formState.runtimeId,
+  );
+  const selectedInferenceProfile = getCompatibleInferenceProfile(
+    selectedModel,
+    formState.runtimeId,
     formState.inferenceProfileId,
     formState.dtype,
   );
-  const modelOptions = models.map((model) => ({
+  const selectedRuntime = runtimeOptions.find(
+    (runtime) => runtime.id === formState.runtimeId,
+  ) ?? runtimeOptions[0];
+  const showsServingControls = formState.runtimeId !== "transformers";
+  const showsKvCacheDtype = runtimeSupportsKvCacheDtype(formState.runtimeId);
+  const showsAdvancedOptions = showsServingControls || formState.gpuId === "custom";
+  const hasCompatibleProfiles = compatibleInferenceProfiles.length > 0;
+  const modelOptions = [...models].sort(compareModelDropdownOrder).map((model) => ({
     label: model.displayName,
     value: model.id,
   }));
-  const inferenceProfileOptions = getInferenceProfiles(selectedModel).map((profile) => ({
+  const runtimeFieldOptions = runtimeOptions.map((runtime) => ({
+    label: runtime.label,
+    value: runtime.id,
+  }));
+  const kvCacheDtypeFieldOptions = kvCacheDtypeOptions.map((option) => ({
+    label: option.label,
+    value: option.value,
+  }));
+  const inferenceProfileOptions = compatibleInferenceProfiles.map((profile) => ({
     label: profile.label,
     value: profile.id,
-  }));
-  const dtypeFieldOptions = dtypeOptions.map((option) => ({
-    label: option.label,
-    value: option.value,
-  }));
-  const trainingFieldOptions = trainingTypeOptions.map((option) => ({
-    label: option.label,
-    value: option.value,
   }));
   const gpuFieldOptions = gpus.map((gpu) => ({
     label: gpu.displayName,
     value: gpu.id,
-  }));
-  const modeFieldOptions = modeOptions.map((option) => ({
-    disabled: !modelSupportsMode(selectedModel, option.value),
-    label: option.label,
-    value: option.value,
   }));
 
   const scrollToResults = useEffectEvent(() => {
@@ -97,33 +110,39 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
     key: K,
     value: EstimateInput[K],
   ) {
-    setFormState((current) => {
-      const next = { ...current, [key]: value };
-
-      if (key === "mode" && value === "inference") {
-        next.trainingType = current.trainingType;
-      }
-
-      return next;
-    });
+    setFormState((current) => ({ ...current, [key]: value }));
   }
 
   function handleModelChange(modelId: string) {
     setFormState((current) => applyModelConstraints({ ...current, modelId }));
   }
 
-  function handleModeChange(nextMode: Mode) {
-    setFormState((current) => applyModelConstraints({ ...current, mode: nextMode }));
-  }
-
   function handleInferenceProfileChange(profileId: string) {
-    const profile = getInferenceProfile(selectedModel, profileId, formState.dtype);
+    const profile = getCompatibleInferenceProfile(
+      selectedModel,
+      formState.runtimeId,
+      profileId,
+      formState.dtype,
+    );
+
+    if (!profile) {
+      return;
+    }
 
     setFormState((current) =>
       applyModelConstraints({
         ...current,
         dtype: profile.effectiveDtype,
         inferenceProfileId: profile.id,
+      }),
+    );
+  }
+
+  function handleRuntimeChange(runtimeId: string) {
+    setFormState((current) =>
+      applyModelConstraints({
+        ...current,
+        runtimeId: runtimeId as EstimateInput["runtimeId"],
       }),
     );
   }
@@ -141,6 +160,10 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
   }
 
   function handleCalculate() {
+    if (!hasCompatibleProfiles) {
+      return;
+    }
+
     const normalized = applyModelConstraints(normalizeEstimateInput(formState));
     const nextResult = estimateVram(normalized);
     const params = serializeEstimateInput(normalized);
@@ -163,8 +186,8 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
               Will It Fit?
             </h1>
             <p className="max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg">
-              Estimate GPU VRAM for model inference and training with a compact,
-              explainable breakdown. The math stays simple on purpose.
+              Estimate single-GPU text inference VRAM across Transformers and
+              vLLM with a compact, explainable breakdown.
             </p>
           </div>
         </div>
@@ -176,7 +199,7 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             handleCalculate();
           }}
         >
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-3">
               <FieldLabel label="Model" />
               <SelectField
@@ -187,14 +210,30 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             </div>
 
             <div className="space-y-3">
-              <FieldLabel
-                label={
-                  formState.mode === "inference"
-                    ? "Checkpoint profile"
-                    : "Dtype / quantization"
-                }
+              <FieldLabel label="Runtime" />
+              <SelectField
+                onChange={handleRuntimeChange}
+                options={runtimeFieldOptions}
+                value={formState.runtimeId}
               />
-              {formState.mode === "inference" ? (
+            </div>
+
+            {showsKvCacheDtype ? (
+              <div className="space-y-3">
+                <FieldLabel label="KV cache dtype" />
+                <SelectField
+                  onChange={(value) =>
+                    updateField("kvCacheDtype", value as EstimateInput["kvCacheDtype"])
+                  }
+                  options={kvCacheDtypeFieldOptions}
+                  value={formState.kvCacheDtype}
+                />
+              </div>
+            ) : null}
+
+            <div className="space-y-3">
+              <FieldLabel label="Checkpoint profile" />
+              {hasCompatibleProfiles && selectedInferenceProfile ? (
                 <SelectField
                   disabled={Boolean(selectedModel.fixedDtype)}
                   onChange={handleInferenceProfileChange}
@@ -202,12 +241,11 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                   value={selectedInferenceProfile.id}
                 />
               ) : (
-                <SelectField
-                  disabled={Boolean(selectedModel.fixedDtype)}
-                  onChange={(value) => updateField("dtype", value as EstimateInput["dtype"])}
-                  options={dtypeFieldOptions}
-                  value={formState.dtype}
-                />
+                <div
+                  className={`${fieldClassName} cursor-not-allowed text-[var(--muted)] opacity-70`}
+                >
+                  No compatible profile in v1
+                </div>
               )}
             </div>
 
@@ -218,45 +256,32 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             {selectedModel.fixedDtype ? (
               <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
                 This checkpoint is fixed to {formatDtype(selectedModel.fixedDtype)} in
-                v0.
+                the current release.
               </p>
             ) : null}
 
-            {formState.mode === "inference" ? (
-              <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
+            {hasCompatibleProfiles && selectedInferenceProfile ? (
+              <p className="text-[0.82rem] leading-5 text-[var(--muted)] md:col-span-2 xl:col-span-4">
                 {selectedInferenceProfile.official ? "Official" : "Proxy"} profile:{" "}
                 {selectedInferenceProfile.label}. {selectedInferenceProfile.note}
               </p>
-            ) : null}
-
-            <div className="space-y-3 md:col-span-2">
-              <FieldLabel
-                label="Mode"
-                hint="Inference is weight + KV cache. Training adds activations, gradients, and optimizer state."
-              />
-              <SegmentedField
-                onChange={(value) => handleModeChange(value as Mode)}
-                options={modeFieldOptions}
-                value={formState.mode}
-              />
-            </div>
-
-            {!modelSupportsMode(selectedModel, "training") ? (
-              <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
-                This model is inference-only in v0.
+            ) : (
+              <p className="rounded-[1.35rem] bg-[var(--danger-soft)] px-4 py-3 text-sm leading-6 text-[var(--danger)] md:col-span-2 xl:col-span-4">
+                {selectedModel.displayName} does not have a compatible checkpoint profile
+                for {selectedRuntime.label} in v1 yet. Pick a different runtime or model.
               </p>
-            ) : null}
+            )}
 
-            {formState.mode === "training" ? (
-              <div className="space-y-3">
-                <FieldLabel label="Training type" />
-                <SelectField
-                  onChange={(value) =>
-                    updateField("trainingType", value as EstimateInput["trainingType"])
-                  }
-                  options={trainingFieldOptions}
-                  value={formState.trainingType}
-                />
+            {isMultimodalModel(selectedModel) ? (
+              <div className="rounded-[1.5rem] border border-[var(--line)] bg-white/55 px-4 py-3 md:col-span-2 xl:col-span-4">
+                <span className="inline-flex rounded-full bg-[var(--accent-soft)] px-3 py-1 text-[0.72rem] mono text-[var(--accent)]">
+                  Text-only estimate
+                </span>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                  This multimodal checkpoint is estimated only for text requests in
+                  v1. Resident vision and projector weights stay counted, but image
+                  and video token memory is excluded.
+                </p>
               </div>
             ) : null}
 
@@ -275,121 +300,104 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             </div>
           </div>
 
-          <div
-            className={cx(
-              "rounded-[1.8rem] border border-[var(--line)] bg-white/50 px-4 py-2.5 transition-[background-color,border-color,box-shadow] duration-300 ease-out md:px-5 md:py-3",
-              advancedOpen && "bg-white/62 shadow-[0_16px_36px_rgba(30,36,42,0.06)]",
-            )}
-          >
-            <button
-              aria-expanded={advancedOpen}
-              className="flex w-full items-center justify-between gap-3 text-left"
-              onClick={() => setAdvancedOpen((current) => !current)}
-              type="button"
+          {showsAdvancedOptions ? (
+            <div
+              className={cx(
+                "rounded-[1.8rem] border border-[var(--line)] bg-white/50 px-4 py-2.5 transition-[background-color,border-color,box-shadow] duration-300 ease-out md:px-5 md:py-3",
+                advancedOpen && "bg-white/62 shadow-[0_16px_36px_rgba(30,36,42,0.06)]",
+              )}
             >
-              <div>
-                <p className="text-sm font-medium text-[var(--ink)]">
-                  Advanced options
-                </p>
-                <p className="mt-0.5 text-[0.82rem] leading-5 text-[var(--muted)]">
-                  Context length and batch size. Extra fields appear when they are relevant.
-                </p>
-              </div>
-              <span className="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--line)] bg-white/72">
-                <ChevronIcon open={advancedOpen} />
-              </span>
-            </button>
-
-            <AnimatedExpand open={advancedOpen}>
-              <div className="grid gap-5 pt-5 md:grid-cols-2">
-                <div className="space-y-3">
-                  <FieldLabel label="Context length" />
-                  <input
-                    className={fieldClassName}
-                    min={256}
-                    onChange={(event) =>
-                      handleNumberChange("contextLength", event.target.value)
-                    }
-                    step={256}
-                    type="number"
-                    value={formState.contextLength}
-                  />
+              <button
+                aria-expanded={advancedOpen}
+                className="flex w-full items-center justify-between gap-3 text-left"
+                onClick={() => setAdvancedOpen((current) => !current)}
+                type="button"
+              >
+                <div>
+                  <p className="text-sm font-medium text-[var(--ink)]">
+                    {showsServingControls ? "Serving options" : "Custom GPU"}
+                  </p>
+                  <p className="mt-0.5 text-[0.82rem] leading-5 text-[var(--muted)]">
+                    {showsServingControls
+                      ? "Context length and concurrent requests. Extra fields appear when they are relevant."
+                      : "Set nominal VRAM for a custom card."}
+                  </p>
                 </div>
+                <span className="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--line)] bg-white/72">
+                  <ChevronIcon open={advancedOpen} />
+                </span>
+              </button>
 
-                <div className="space-y-3">
-                  <FieldLabel label="Batch size" />
-                  <input
-                    className={fieldClassName}
-                    min={1}
-                    onChange={(event) =>
-                      handleNumberChange("batchSize", event.target.value)
-                    }
-                    step={1}
-                    type="number"
-                    value={formState.batchSize}
-                  />
+              <AnimatedExpand open={advancedOpen}>
+                <div className="grid gap-5 pt-5 md:grid-cols-2">
+                  {showsServingControls ? (
+                    <div className="space-y-3">
+                      <FieldLabel label="Context length" />
+                      <input
+                        className={fieldClassName}
+                        min={256}
+                        onChange={(event) =>
+                          handleNumberChange("contextLength", event.target.value)
+                        }
+                        step={256}
+                        type="number"
+                        value={formState.contextLength}
+                      />
+                    </div>
+                  ) : null}
+
+                  {showsServingControls ? (
+                    <div className="space-y-3">
+                      <FieldLabel label="Concurrent requests" />
+                      <input
+                        className={fieldClassName}
+                        min={1}
+                        onChange={(event) =>
+                          handleNumberChange("batchSize", event.target.value)
+                        }
+                        step={1}
+                        type="number"
+                        value={formState.batchSize}
+                      />
+                    </div>
+                  ) : null}
+
+                  <AnimatedExpand
+                    className="md:col-span-1"
+                    open={formState.gpuId === "custom"}
+                  >
+                    <div className="space-y-3">
+                      <FieldLabel label="Custom GPU VRAM (GB)" />
+                      <input
+                        className={fieldClassName}
+                        min={1}
+                        onChange={(event) =>
+                          handleNumberChange("customVramGb", event.target.value)
+                        }
+                        step={1}
+                        type="number"
+                        value={formState.customVramGb}
+                      />
+                    </div>
+                  </AnimatedExpand>
                 </div>
-
-                <AnimatedExpand
-                  className="md:col-span-1"
-                  open={formState.gpuId === "custom"}
-                >
-                  <div className="space-y-3">
-                    <FieldLabel label="Custom GPU VRAM (GB)" />
-                    <input
-                      className={fieldClassName}
-                      min={1}
-                      onChange={(event) =>
-                        handleNumberChange("customVramGb", event.target.value)
-                      }
-                      step={1}
-                      type="number"
-                      value={formState.customVramGb}
-                    />
-                  </div>
-                </AnimatedExpand>
-
-                <AnimatedExpand
-                  className="md:col-span-2"
-                  open={formState.mode === "training"}
-                >
-                  <div className="grid gap-5 md:grid-cols-2">
-                    <ToggleRow
-                      checked={formState.gradientCheckpointing}
-                      description="Halves the activation factor in the v0 training estimate."
-                      label="Gradient checkpointing"
-                      onChange={() =>
-                        updateField(
-                          "gradientCheckpointing",
-                          !formState.gradientCheckpointing,
-                        )
-                      }
-                    />
-                    <ToggleRow
-                      checked={formState.sequencePacking}
-                      description="Applies a 15% activation discount as a compact packing proxy."
-                      label="Sequence packing"
-                      onChange={() =>
-                        updateField("sequencePacking", !formState.sequencePacking)
-                      }
-                    />
-                  </div>
-                </AnimatedExpand>
-              </div>
-            </AnimatedExpand>
-          </div>
+              </AnimatedExpand>
+            </div>
+          ) : null}
 
           <div className="flex flex-col gap-4 border-t border-[var(--line)] pt-6">
             <button
-              className="inline-flex w-full items-center justify-center rounded-full bg-[var(--ink)] px-5 py-3.5 text-sm font-medium text-white transition hover:translate-y-[-1px] hover:shadow-[var(--shadow-soft)] md:w-auto"
+              className="inline-flex w-full items-center justify-center rounded-full bg-[var(--ink)] px-5 py-3.5 text-sm font-medium text-white transition enabled:hover:translate-y-[-1px] enabled:hover:shadow-[var(--shadow-soft)] disabled:cursor-not-allowed disabled:opacity-45 md:w-auto"
+              disabled={!hasCompatibleProfiles}
               type="submit"
             >
               Calculate VRAM
             </button>
-            <p className="max-w-2xl text-sm leading-6 text-[var(--muted)]">
-              Quick mental model: a dense 7B model in FP16 starts around 14 GB
-              just for weights. Long context and training state are what push it
-              beyond a 24 GB card.
+            <p className="text-sm leading-6 text-[var(--muted)]">
+              Quick mental model: Transformers stays a fixed single-request
+              baseline, while vLLM exposes serving context and concurrency.
+              Runtime presets still change the required card VRAM, and FP8 KV
+              cache cuts the KV term roughly in half versus BF16.
             </p>
           </div>
         </form>
@@ -438,19 +446,44 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     ? "Fits on selected GPU"
                     : "Does not fit on selected GPU"}
                 </span>
+                {isMultimodalModel(result.model) ? (
+                  <span className="inline-flex rounded-full bg-[var(--accent-soft)] px-3 py-1 text-[0.72rem] mono text-[var(--accent)]">
+                    Text-only estimate
+                  </span>
+                ) : null}
                 <div>
                   <p className="text-sm text-[var(--muted)]">
-                    {result.model.displayName} · {result.calculationProfile}
+                    {result.model.displayName} · {result.runtime.label} · {result.calculationProfile}
+                  </p>
+                  <p className="mt-2 text-sm text-[var(--muted)]">
+                    {result.fitMetricLabel}
                   </p>
                   <h2 className="hero-title mt-2 text-3xl leading-tight md:text-4xl">
-                    {formatGb(result.totalBytes)}
+                    {formatGb(result.requiredGpuBytes)}
                   </h2>
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                    Core estimate: {formatGb(result.totalBytes)}.{" "}
                     Against {result.gpu.displayName}, this leaves{" "}
                     {result.fits
                       ? `${formatGb(result.headroomBytes)} of headroom.`
                       : `${formatGb(result.deficitBytes)} of deficit.`}
                   </p>
+                  {result.maxConcurrencyAtContext !== undefined ? (
+                    <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                      At {formatInteger(result.effectiveContextLength)} tokens, the
+                      estimated max concurrency is{" "}
+                      {formatInteger(result.maxConcurrencyAtContext)} concurrent
+                      {result.maxConcurrencyAtContext === 1 ? " request" : " requests"}.
+                    </p>
+                  ) : null}
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <Link
+                      className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
+                      href={getModelNotesHref(result.input)}
+                    >
+                      About model
+                    </Link>
+                  </div>
                 </div>
               </div>
 
@@ -463,18 +496,50 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     label="Selected GPU"
                     value={result.gpu.displayName}
                   />
+                  <DetailRow label="Runtime" value={result.runtime.label} />
+                  {result.input.runtimeId === "transformers" ? (
+                    <DetailRow label="Serving mode" value="Single request baseline" />
+                  ) : null}
+                  {runtimeSupportsKvCacheDtype(result.input.runtimeId) ? (
+                    <DetailRow
+                      label="KV cache dtype"
+                      value={formatDtype(result.input.kvCacheDtype)}
+                    />
+                  ) : null}
+                  {result.input.runtimeId !== "transformers" ? (
+                    <DetailRow
+                      label="Context length"
+                      value={formatInteger(result.effectiveContextLength)}
+                    />
+                  ) : null}
+                  {result.input.runtimeId !== "transformers" ? (
+                    <DetailRow
+                      label="Current concurrency"
+                      value={formatInteger(result.input.batchSize)}
+                    />
+                  ) : null}
+                  {result.maxConcurrencyAtContext !== undefined ? (
+                    <DetailRow
+                      label="Max concurrency @ context"
+                      value={formatInteger(result.maxConcurrencyAtContext)}
+                    />
+                  ) : null}
                   <DetailRow label="Class" value={result.gpu.classType} />
                   <DetailRow
                     label="Bandwidth"
                     value={formatBandwidth(result.gpu.memoryBandwidthGbps)}
                   />
                   <DetailRow
-                    label="Available VRAM"
+                    label="Nominal VRAM"
                     value={`${result.gpu.vramGb.toFixed(0)} GB`}
                   />
                   <DetailRow
-                    label="Estimated total"
+                    label="Core estimate"
                     value={formatGb(result.totalBytes)}
+                  />
+                  <DetailRow
+                    label={result.fitMetricLabel}
+                    value={formatGb(result.requiredGpuBytes)}
                   />
                   <DetailRow
                     label={result.fits ? "Headroom" : "Deficit"}
@@ -518,11 +583,15 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             <div className="mt-5 rounded-[1.6rem] bg-white/55 p-4 text-sm leading-7 text-[var(--muted)]">
               <p>Weights = parameter count × bytes per parameter.</p>
               {result.input.mode === "inference" ? (
-                <p>KV cache grows with context length, layers, and batch size.</p>
+                <p>
+                  {result.input.runtimeId === "transformers"
+                    ? "Transformers is pinned to a fixed 4K single-request baseline in this release."
+                    : "KV cache grows with context length, KV-bearing layers, concurrent requests, and the selected KV cache dtype."}
+                </p>
               ) : (
                 <p>Training adds activations, gradients, and optimizer memory on top of resident weights.</p>
               )}
-              <p>Quantization mainly shrinks the frozen weight footprint; activations and runtime buffers stay closer to 16-bit math.</p>
+              <p>Hybrid Qwen3.5 layers also keep a static linear-attention state, and runtime presets can inflate the required card VRAM beyond the core estimate.</p>
             </div>
 
             <details className="mt-4 rounded-[1.6rem] border border-[var(--line)] bg-white/55 p-4">
@@ -569,86 +638,36 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
           <section className={cardClassName}>
             <SectionTitle eyebrow="Model" title="Selected model" />
             <div className="mt-5 rounded-[1.75rem] bg-white/55 p-6 md:p-7">
-              <h3 className="text-xl text-[var(--ink)]">
-                {result.model.displayName}
-              </h3>
-              <p className="mt-3 max-w-4xl text-sm leading-7 text-[var(--muted)]">
-                {result.model.shortDescription}
-              </p>
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <div className="rounded-[1.4rem] bg-white/62 p-4">
-                  <p className="eyebrow text-[0.62rem] text-[var(--muted)]">
-                    Research highlight
-                  </p>
-                  <p className="mt-2 text-sm leading-7 text-[var(--ink)]">
-                    {result.model.researchHighlight}
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="text-xl text-[var(--ink)]">{result.model.displayName}</h3>
+                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                    {formatModelAtGlance(result.model)}
                   </p>
                 </div>
-                <div className="rounded-[1.4rem] bg-white/62 p-4">
-                  <p className="eyebrow text-[0.62rem] text-[var(--muted)]">
-                    Memory note
-                  </p>
-                  <p className="mt-2 text-sm leading-7 text-[var(--ink)]">
-                    {result.model.memoryNote}
-                  </p>
-                </div>
+                <Link
+                  className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
+                  href={getModelNotesHref(result.input)}
+                >
+                  About model
+                </Link>
               </div>
-              {result.notes.length > 0 ? (
-                <div className="mt-4 rounded-[1.4rem] bg-white/62 p-4">
-                  <p className="eyebrow text-[0.62rem] text-[var(--muted)]">
-                    Estimator notes
-                  </p>
-                  <div className="mt-2 space-y-2 text-sm leading-7 text-[var(--ink)]">
-                    {result.notes.map((note) => (
-                      <p key={note}>{note}</p>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              <div className="mt-6 grid gap-x-10 gap-y-4 md:grid-cols-2">
-                <DetailRow
-                  label="Architecture"
-                  value={result.model.architectureType}
-                />
-                <DetailRow
-                  label="Total params"
-                  value={formatParamCount(result.model.totalParams)}
-                />
-                <DetailRow
-                  label="Active params"
-                  value={
-                    result.model.activeParams
-                      ? formatParamCount(result.model.activeParams)
-                      : "Dense model"
-                  }
-                />
-                <DetailRow label="Layers" value={result.model.numLayers.toString()} />
-                <DetailRow
-                  label="Hidden size"
-                  value={formatInteger(result.model.hiddenSize)}
-                />
-                <DetailRow
-                  label="Attention heads"
-                  value={result.model.numAttentionHeads.toString()}
-                />
-                <DetailRow
-                  label="KV heads"
-                  value={(result.model.numKvHeads ?? result.model.numAttentionHeads).toString()}
-                />
-                <DetailRow
-                  label="Context length"
-                  value={formatInteger(result.model.contextLength)}
-                />
-                <DetailRow label="License" value={result.model.license} />
+              <ModelSpecGrid className="mt-6" model={result.model} />
+              <div className="mt-5 flex flex-wrap gap-3">
+                <a
+                  className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
+                  href={getInferenceProfileSourceUrl(
+                    result.model,
+                    result.effectiveInferenceProfileId,
+                    result.input.runtimeId,
+                    result.effectiveDtype,
+                  )}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Open selected checkpoint
+                </a>
               </div>
-              <a
-                className="mt-5 inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
-                href={result.model.sourceUrl}
-                rel="noreferrer"
-                target="_blank"
-              >
-                Open source link
-              </a>
             </div>
           </section>
 
@@ -659,7 +678,9 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             <div className="mt-3 space-y-2">
               <p>
                 The calculator works in raw bytes, displays decimal GB, and keeps
-                conservative runtime headroom.
+                both the core tensor footprint and the runtime-adjusted card
+                requirement explicit instead of pretending every engine uses the
+                full card the same way.
               </p>
             </div>
             <div className="mt-5 border-t border-[var(--line)] pt-4 text-center text-sm leading-6 text-[var(--ink)]">
@@ -669,7 +690,7 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                 rel="noreferrer"
                 target="_blank"
               >
-                If you found this helpful, show us support here ☕
+                If you found this useful, support the project here ☕
               </a>
             </div>
           </div>
@@ -746,7 +767,9 @@ function SelectField({
         }}
         type="button"
       >
-        <span className="truncate">{selectedOption?.label}</span>
+        <span className="min-w-0 flex-1 truncate" title={selectedOption?.label}>
+          {selectedOption?.label}
+        </span>
         <ChevronIcon open={isOpen} />
       </button>
 
@@ -769,7 +792,7 @@ function SelectField({
             <button
               aria-selected={option.value === value}
               className={cx(
-                "flex min-h-11 w-full items-center justify-between rounded-[1rem] px-3.5 py-3 text-sm text-[var(--ink)] transition",
+                "flex min-h-11 w-full items-start justify-between gap-3 rounded-[1rem] px-3.5 py-3 text-left text-sm text-[var(--ink)] transition",
                 option.value === value
                   ? "bg-[rgba(30,36,42,0.08)]"
                   : "hover:bg-[rgba(30,36,42,0.05)]",
@@ -782,9 +805,11 @@ function SelectField({
               role="option"
               type="button"
             >
-              <span className="truncate">{option.label}</span>
+              <span className="flex-1 whitespace-normal break-words leading-5">
+                {option.label}
+              </span>
               {option.value === value ? (
-                <span className="mono text-[0.72rem] text-[var(--muted)]">set</span>
+                <span className="mono pt-0.5 text-[0.72rem] text-[var(--muted)]">set</span>
               ) : null}
             </button>
           ))}
@@ -826,94 +851,6 @@ function AnimatedExpand({
   );
 }
 
-function SegmentedField({
-  onChange,
-  options,
-  value,
-}: {
-  onChange: (value: string) => void;
-  options: Array<{ disabled?: boolean; label: string; value: string }>;
-  value: string;
-}) {
-  const activeIndex = Math.max(
-    options.findIndex((option) => option.value === value),
-    0,
-  );
-
-  return (
-    <div
-      className="relative inline-grid w-full rounded-full border border-[var(--line)] bg-white/60 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.28)] md:max-w-[22rem]"
-      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
-    >
-      <span
-        aria-hidden="true"
-        className="absolute bottom-1 left-1 top-1 rounded-full bg-[var(--ink)] shadow-[var(--shadow-soft)] transition-transform duration-250 ease-out"
-        style={{
-          transform: `translateX(${activeIndex * 100}%)`,
-          width: `calc((100% - 0.5rem) / ${options.length})`,
-        }}
-      />
-
-      {options.map((option) => (
-        <button
-          key={option.value}
-          className={cx(
-            "relative z-10 rounded-full px-4 py-2.5 text-sm transition-colors duration-200",
-            option.disabled
-              ? "cursor-not-allowed text-[var(--muted)]/55"
-              : value === option.value
-                ? "text-white"
-                : "text-[var(--muted)] hover:text-[var(--ink)]",
-          )}
-          disabled={option.disabled}
-          onClick={() => onChange(option.value)}
-          type="button"
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ToggleRow({
-  checked,
-  description,
-  label,
-  onChange,
-}: {
-  checked: boolean;
-  description: string;
-  label: string;
-  onChange: () => void;
-}) {
-  return (
-    <button
-      className="flex items-center justify-between gap-4 rounded-[1.35rem] border border-[var(--line)] bg-white/62 px-4 py-3 text-left"
-      onClick={onChange}
-      type="button"
-    >
-      <div>
-        <p className="text-sm font-medium text-[var(--ink)]">{label}</p>
-        <p className="text-sm leading-6 text-[var(--muted)]">{description}</p>
-      </div>
-      <span
-        className={cx(
-          "relative h-7 w-12 rounded-full transition",
-          checked ? "bg-[var(--accent)]" : "bg-[rgba(30,36,42,0.12)]",
-        )}
-      >
-        <span
-          className={cx(
-            "absolute top-1 h-5 w-5 rounded-full bg-white transition",
-            checked ? "left-6" : "left-1",
-          )}
-        />
-      </span>
-    </button>
-  );
-}
-
 function SectionTitle({
   eyebrow,
   title,
@@ -931,22 +868,53 @@ function SectionTitle({
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-start justify-between gap-4 border-b border-[var(--line)] pb-3 last:border-b-0 last:pb-0">
-      <p className="text-sm leading-6 text-[var(--muted)]">{label}</p>
-      <p className="text-right text-sm leading-6 text-[var(--ink)]">{value}</p>
-    </div>
-  );
+function compareModelDropdownOrder(left: ModelSpec, right: ModelSpec) {
+  const familyRankDiff = getModelFamilyRank(right) - getModelFamilyRank(left);
+
+  if (familyRankDiff !== 0) {
+    return familyRankDiff;
+  }
+
+  const versionDiff = getModelVersionScore(right.displayName) - getModelVersionScore(left.displayName);
+
+  if (versionDiff !== 0) {
+    return versionDiff;
+  }
+
+  const sizeDiff = getModelSizeScore(right.displayName) - getModelSizeScore(left.displayName);
+
+  if (sizeDiff !== 0) {
+    return sizeDiff;
+  }
+
+  return left.displayName.localeCompare(right.displayName);
 }
 
-function formatModelAtGlance(model: ModelSpec) {
-  const kvHeads = model.numKvHeads ?? model.numAttentionHeads;
-  const parameterLine = model.activeParams
-    ? `${formatParamCount(model.totalParams)} total • ${formatParamCount(model.activeParams)} active`
-    : `${formatParamCount(model.totalParams)} dense`;
+function getModelFamilyRank(model: ModelSpec) {
+  const familyRank: Record<string, number> = {
+    "GPT-OSS": 90,
+    Qwen: 80,
+    Nemotron: 70,
+    Llama: 60,
+    Phi: 50,
+    Gemma: 40,
+    Mistral: 30,
+    Mixtral: 20,
+  };
 
-  return `${parameterLine} • ${formatInteger(model.contextLength)} context • ${kvHeads} KV heads`;
+  return familyRank[model.family] ?? 0;
+}
+
+function getModelVersionScore(displayName: string) {
+  const match = displayName.match(/(\d+(?:\.\d+)?)/);
+
+  return match ? Number.parseFloat(match[1]) : 0;
+}
+
+function getModelSizeScore(displayName: string) {
+  const match = displayName.match(/(\d+(?:\.\d+)?)B/i);
+
+  return match ? Number.parseFloat(match[1]) : 0;
 }
 
 function ChevronIcon({ open }: { open: boolean }) {
@@ -970,4 +938,8 @@ function ChevronIcon({ open }: { open: boolean }) {
 
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
+}
+
+function getModelNotesHref(input: EstimateInput) {
+  return `/models/${input.modelId}?${serializeEstimateInput(input).toString()}`;
 }

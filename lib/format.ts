@@ -11,7 +11,7 @@ export function formatGb(bytes: number): string {
 
 export function formatBandwidth(bandwidthGbps?: number): string {
   if (!bandwidthGbps) {
-    return "User supplied";
+    return "Not modeled";
   }
 
   return `${bandwidthGbps.toLocaleString()} GB/s`;

@@ -4,6 +4,22 @@ export type TrainingType = "sft" | "lora" | "qlora" | "grpo";
 
 export type Dtype = "fp32" | "fp16" | "bf16" | "fp8" | "int8" | "int4";
 
+export type RuntimeId = "transformers" | "vllm";
+
+export type KvCacheDtype = "bf16" | "fp8";
+
+export type Modality = "text" | "multimodal";
+
+export type CacheStrategy =
+  | "standard_gqa"
+  | "hybrid_attention"
+  | "alternating_window_attention";
+
+export interface RuntimeSpec {
+  id: RuntimeId;
+  label: string;
+}
+
 export interface InferenceProfile {
   id: string;
   label: string;
@@ -16,6 +32,7 @@ export interface InferenceProfile {
   targetMemoryGb?: number;
   targetBatchSize?: number;
   targetContextLength?: number;
+  supportedRuntimes?: RuntimeId[];
 }
 
 export interface ModelSpec {
@@ -31,7 +48,20 @@ export interface ModelSpec {
   hiddenSize: number;
   numAttentionHeads: number;
   numKvHeads?: number;
+  attentionHeadDim?: number;
+  linearNumKeyHeads?: number;
+  linearNumValueHeads?: number;
+  linearKeyHeadDim?: number;
+  linearValueHeadDim?: number;
+  linearConvKernelDim?: number;
+  linearStateBytesPerElement?: number;
+  denseAttentionLayerCount?: number;
+  slidingWindowAttentionLayerCount?: number;
+  slidingWindowContextLength?: number;
   contextLength: number;
+  modality?: Modality;
+  cacheStrategy?: CacheStrategy;
+  attentionLayerCount?: number;
   vocabSize: number;
   license: string;
   sourceUrl: string;
@@ -54,6 +84,8 @@ export interface GpuSpec {
 export interface EstimateInput {
   mode: Mode;
   trainingType: TrainingType;
+  runtimeId: RuntimeId;
+  kvCacheDtype: KvCacheDtype;
   modelId: string;
   dtype: Dtype;
   inferenceProfileId: string;
@@ -70,6 +102,7 @@ export interface BreakdownItem {
     | "weights"
     | "masterWeights"
     | "kvCache"
+    | "linearState"
     | "activations"
     | "gradients"
     | "optimizer"
@@ -91,14 +124,19 @@ export interface EstimateResult {
   input: EstimateInput;
   model: ModelSpec;
   gpu: GpuSpec;
+  runtime: RuntimeSpec;
+  runtimeNotes: string[];
   fits: boolean;
   totalBytes: number;
   gpuBytes: number;
   headroomBytes: number;
   deficitBytes: number;
+  requiredGpuBytes: number;
+  fitMetricLabel: string;
   weightsBytes: number;
   masterWeightsBytes: number;
   kvCacheBytes: number;
+  linearStateBytes: number;
   activationsBytes: number;
   gradientsBytes: number;
   optimizerBytes: number;
@@ -110,6 +148,7 @@ export interface EstimateResult {
   notes: string[];
   tips: string[];
   effectiveContextLength: number;
+  maxConcurrencyAtContext?: number;
   effectiveDtype: Dtype;
   effectiveTrainingType: TrainingType;
   effectiveInferenceProfileId?: string;

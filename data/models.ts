@@ -1,7 +1,12 @@
+import { ALL_RUNTIMES } from "@/lib/runtime";
 import type { InferenceProfile, ModelSpec } from "@/lib/types";
 
 function bytesFromCheckpointGb(checkpointGb: number, totalParams: number) {
   return (checkpointGb * 1_000_000_000) / totalParams;
+}
+
+function bytesFromCheckpointGiB(checkpointGiB: number, totalParams: number) {
+  return (checkpointGiB * 1024 * 1024 * 1024) / totalParams;
 }
 
 function directProfile(profile: Omit<InferenceProfile, "official" | "weightMode">): InferenceProfile {
@@ -9,16 +14,6 @@ function directProfile(profile: Omit<InferenceProfile, "official" | "weightMode"
     ...profile,
     official: true,
     weightMode: "direct",
-  };
-}
-
-function calibratedProfile(
-  profile: Omit<InferenceProfile, "official" | "weightMode" | "weightBytes">,
-): InferenceProfile {
-  return {
-    ...profile,
-    official: true,
-    weightMode: "calibrated",
   };
 }
 
@@ -36,6 +31,11 @@ export const models: ModelSpec[] = [
     hiddenSize: 2880,
     numAttentionHeads: 64,
     numKvHeads: 8,
+    attentionHeadDim: 64,
+    cacheStrategy: "alternating_window_attention",
+    denseAttentionLayerCount: 12,
+    slidingWindowAttentionLayerCount: 12,
+    slidingWindowContextLength: 128,
     contextLength: 128_000,
     vocabSize: 201_088,
     license: "Apache 2.0",
@@ -47,15 +47,13 @@ export const models: ModelSpec[] = [
     memoryNote:
       "More than 90% of GPT-OSS 20B's parameters sit in MoE weights quantized to MXFP4, while the remaining shared weights stay in BF16.",
     inferenceProfiles: [
-      calibratedProfile({
+      directProfile({
         id: "official-mixed",
         label: "Mixed MXFP4 + BF16 checkpoint",
         effectiveDtype: "bf16",
-        targetMemoryGb: 16,
-        targetBatchSize: 1,
-        targetContextLength: 4096,
+        weightBytes: bytesFromCheckpointGiB(12.8, 21_000_000_000),
         sourceUrl: "https://huggingface.co/openai/gpt-oss-20b",
-        note: "OpenAI says GPT-OSS 20B runs within 16 GB, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
+        note: "OpenAI's GPT-OSS model card lists a 12.8 GiB checkpoint for gpt-oss-20b. The estimator uses that published mixed MXFP4 + BF16 resident checkpoint size directly.",
       }),
     ],
   },
@@ -72,26 +70,29 @@ export const models: ModelSpec[] = [
     hiddenSize: 2880,
     numAttentionHeads: 64,
     numKvHeads: 8,
+    attentionHeadDim: 64,
+    cacheStrategy: "alternating_window_attention",
+    denseAttentionLayerCount: 18,
+    slidingWindowAttentionLayerCount: 18,
+    slidingWindowContextLength: 128,
     contextLength: 128_000,
     vocabSize: 201_088,
     license: "Apache 2.0",
     sourceUrl: "https://openai.com/open-models",
     shortDescription:
-      "Largest GPT-OSS checkpoint in v0, built for higher-capacity open reasoning with a much larger resident expert pool.",
+      "Largest GPT-OSS checkpoint in the current registry, built for higher-capacity open reasoning with a much larger resident expert pool.",
     researchHighlight:
       "Each MoE block has 128 experts with top-4 routing, and the larger model keeps the alternating full and sliding-window attention recipe while staying near 5.1B active params per token.",
     memoryNote:
       "More than 90% of GPT-OSS 120B's parameters sit in MXFP4-quantized MoE weights, while the remaining shared weights stay in BF16.",
     inferenceProfiles: [
-      calibratedProfile({
+      directProfile({
         id: "official-mixed",
         label: "Mixed MXFP4 + BF16 checkpoint",
         effectiveDtype: "bf16",
-        targetMemoryGb: 80,
-        targetBatchSize: 1,
-        targetContextLength: 4096,
+        weightBytes: bytesFromCheckpointGiB(60.8, 117_000_000_000),
         sourceUrl: "https://huggingface.co/openai/gpt-oss-120b",
-        note: "OpenAI says GPT-OSS 120B fits a single 80 GB GPU, with 90%+ of parameters in MXFP4 MoE weights and the remaining shared weights in BF16.",
+        note: "OpenAI's GPT-OSS model card lists a 60.8 GiB checkpoint for gpt-oss-120b. The estimator uses that published mixed MXFP4 + BF16 resident checkpoint size directly.",
       }),
     ],
   },
@@ -309,6 +310,318 @@ export const models: ModelSpec[] = [
     ],
   },
   {
+    id: "qwen-3.5-0.8b",
+    displayName: "Qwen 3.5 0.8B",
+    family: "Qwen",
+    organization: "Alibaba",
+    architectureType: "Hybrid multimodal transformer",
+    isMoe: false,
+    totalParams: 900_000_000,
+    numLayers: 24,
+    hiddenSize: 1024,
+    numAttentionHeads: 8,
+    numKvHeads: 2,
+    attentionHeadDim: 256,
+    linearNumKeyHeads: 16,
+    linearNumValueHeads: 16,
+    linearKeyHeadDim: 128,
+    linearValueHeadDim: 128,
+    linearConvKernelDim: 4,
+    linearStateBytesPerElement: 4,
+    contextLength: 262_144,
+    modality: "multimodal",
+    cacheStrategy: "hybrid_attention",
+    attentionLayerCount: 6,
+    vocabSize: 248_320,
+    license: "Apache 2.0",
+    sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-0.8B-Base",
+    shortDescription:
+      "Compact Qwen3.5 checkpoint with a hybrid text-plus-vision stack and a small resident footprint for text-only local experimentation.",
+    researchHighlight:
+      "Qwen3.5 alternates gated DeltaNet blocks with gated attention, so only a subset of layers carry a full KV cache during text generation.",
+    memoryNote:
+      "This text-only estimate still counts the resident multimodal checkpoint weights; only media-token-specific memory is excluded in v1.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-0.8B-Base",
+        note: "Qwen ships Qwen3.5-0.8B in Hugging Face Transformers format with documented Transformers and vLLM usage.",
+      }),
+    ],
+  },
+  {
+    id: "qwen-3.5-2b",
+    displayName: "Qwen 3.5 2B",
+    family: "Qwen",
+    organization: "Alibaba",
+    architectureType: "Hybrid multimodal transformer",
+    isMoe: false,
+    totalParams: 2_000_000_000,
+    numLayers: 24,
+    hiddenSize: 2048,
+    numAttentionHeads: 8,
+    numKvHeads: 2,
+    attentionHeadDim: 256,
+    linearNumKeyHeads: 16,
+    linearNumValueHeads: 16,
+    linearKeyHeadDim: 128,
+    linearValueHeadDim: 128,
+    linearConvKernelDim: 4,
+    linearStateBytesPerElement: 4,
+    contextLength: 262_144,
+    modality: "multimodal",
+    cacheStrategy: "hybrid_attention",
+    attentionLayerCount: 6,
+    vocabSize: 248_320,
+    license: "Apache 2.0",
+    sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-2B",
+    shortDescription:
+      "Small hybrid Qwen3.5 release for developers who want longer context and native multimodal training heritage without a large single-card footprint.",
+    researchHighlight:
+      "The 2B variant keeps the same 6 attention-bearing layers as the 0.8B model, which materially reduces KV growth compared with a full-attention stack.",
+    memoryNote:
+      "Resident weights still include the multimodal components, but the hybrid stack keeps text-generation cache growth noticeably lower than a dense full-attention design.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-2B",
+        note: "Qwen documents Qwen3.5-2B in Hugging Face Transformers format with official Transformers and vLLM serving guidance.",
+      }),
+    ],
+  },
+  {
+    id: "qwen-3.5-4b",
+    displayName: "Qwen 3.5 4B",
+    family: "Qwen",
+    organization: "Alibaba",
+    architectureType: "Hybrid multimodal transformer",
+    isMoe: false,
+    totalParams: 5_000_000_000,
+    numLayers: 32,
+    hiddenSize: 2560,
+    numAttentionHeads: 16,
+    numKvHeads: 4,
+    attentionHeadDim: 256,
+    linearNumKeyHeads: 16,
+    linearNumValueHeads: 32,
+    linearKeyHeadDim: 128,
+    linearValueHeadDim: 128,
+    linearConvKernelDim: 4,
+    linearStateBytesPerElement: 4,
+    contextLength: 262_144,
+    modality: "multimodal",
+    cacheStrategy: "hybrid_attention",
+    attentionLayerCount: 8,
+    vocabSize: 248_320,
+    license: "Apache 2.0",
+    sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-4B",
+    shortDescription:
+      "Mid-sized Qwen3.5 checkpoint with a larger resident multimodal footprint but still practical for careful single-GPU text-only serving.",
+    researchHighlight:
+      "The 4B language model sits inside a roughly 5B resident multimodal artifact and uses only 8 gated-attention layers for KV-heavy generation.",
+    memoryNote:
+      "The hybrid layout keeps cache growth lower than dense 32-layer models, but the extra multimodal resident weights raise the single-card floor.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-4B",
+        note: "Qwen publishes Qwen3.5-4B in Hugging Face Transformers format with explicit Transformers and vLLM guidance, including a text-only serving mode in vLLM.",
+      }),
+    ],
+  },
+  {
+    id: "qwen-3.5-9b",
+    displayName: "Qwen 3.5 9B",
+    family: "Qwen",
+    organization: "Alibaba",
+    architectureType: "Hybrid multimodal transformer",
+    isMoe: false,
+    totalParams: 10_000_000_000,
+    numLayers: 32,
+    hiddenSize: 4096,
+    numAttentionHeads: 16,
+    numKvHeads: 4,
+    attentionHeadDim: 256,
+    linearNumKeyHeads: 16,
+    linearNumValueHeads: 32,
+    linearKeyHeadDim: 128,
+    linearValueHeadDim: 128,
+    linearConvKernelDim: 4,
+    linearStateBytesPerElement: 4,
+    contextLength: 262_144,
+    modality: "multimodal",
+    cacheStrategy: "hybrid_attention",
+    attentionLayerCount: 8,
+    vocabSize: 248_320,
+    license: "Apache 2.0",
+    sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-9B",
+    shortDescription:
+      "Largest practical Qwen3.5 release for this batch, pairing a 9B language model with a resident multimodal stack that still targets single-GPU text serving.",
+    researchHighlight:
+      "The hybrid layout keeps only 8 of 32 layers in the gated-attention path, which materially changes KV-cache behavior versus a dense long-context model.",
+    memoryNote:
+      "This estimate intentionally keeps the full multimodal checkpoint resident even for text-only use, so it is conservative relative to runtime-specific language-only shortcuts.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-9B",
+        note: "Qwen documents Qwen3.5-9B for Transformers and vLLM.",
+      }),
+    ],
+  },
+  {
+    id: "openreasoning-nemotron-1.5b",
+    displayName: "OpenReasoning Nemotron 1.5B",
+    family: "Nemotron",
+    organization: "NVIDIA",
+    architectureType: "Dense decoder-only transformer",
+    isMoe: false,
+    totalParams: 1_540_000_000,
+    numLayers: 28,
+    hiddenSize: 1536,
+    numAttentionHeads: 12,
+    numKvHeads: 2,
+    contextLength: 32_768,
+    vocabSize: 151_936,
+    license: "CC-BY-4.0 + Apache 2.0",
+    sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-1.5B",
+    shortDescription:
+      "Small dense Nemotron reasoning model built on the Qwen2.5 1.5B geometry, aimed at strong math and code behavior on modest hardware.",
+    researchHighlight:
+      "NVIDIA post-trains the Qwen2.5 1.5B base for reasoning while keeping the dense grouped-query architecture intact, so the memory geometry stays predictable.",
+    memoryNote:
+      "This behaves like a classic dense Qwen2.5-style checkpoint where resident weights dominate and KV cache follows the standard grouped-attention path.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-1.5B",
+        note: "NVIDIA ships OpenReasoning-Nemotron-1.5B in Hugging Face Transformers format, and v1 models it as a standard dense Qwen2.5-derived checkpoint across the supported runtimes.",
+      }),
+    ],
+  },
+  {
+    id: "openreasoning-nemotron-7b",
+    displayName: "OpenReasoning Nemotron 7B",
+    family: "Nemotron",
+    organization: "NVIDIA",
+    architectureType: "Dense decoder-only transformer",
+    isMoe: false,
+    totalParams: 7_610_000_000,
+    numLayers: 28,
+    hiddenSize: 3584,
+    numAttentionHeads: 28,
+    numKvHeads: 4,
+    contextLength: 131_072,
+    vocabSize: 152_064,
+    license: "CC-BY-4.0 + Apache 2.0",
+    sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-7B",
+    shortDescription:
+      "Reasoning-tuned dense Nemotron checkpoint that tracks the familiar Qwen2.5 7B memory shape while targeting stronger math and code performance.",
+    researchHighlight:
+      "OpenReasoning-Nemotron-7B is post-trained for deliberate reasoning but keeps the dense grouped-query Qwen2.5 backbone, so fit behavior remains straightforward.",
+    memoryNote:
+      "Resident weights set the floor, and the grouped KV layout keeps long-context cache growth moderate relative to older full-head dense models.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-7B",
+        note: "NVIDIA publishes OpenReasoning-Nemotron-7B as a Hugging Face Transformers checkpoint derived from Qwen2.5-7B, so v1 models it with the same dense grouped-query memory geometry.",
+      }),
+    ],
+  },
+  {
+    id: "openreasoning-nemotron-14b",
+    displayName: "OpenReasoning Nemotron 14B",
+    family: "Nemotron",
+    organization: "NVIDIA",
+    architectureType: "Dense decoder-only transformer",
+    isMoe: false,
+    totalParams: 14_700_000_000,
+    numLayers: 48,
+    hiddenSize: 5120,
+    numAttentionHeads: 40,
+    numKvHeads: 8,
+    contextLength: 131_072,
+    vocabSize: 152_064,
+    license: "CC-BY-4.0 + Apache 2.0",
+    sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-14B",
+    shortDescription:
+      "Mid-sized dense Nemotron checkpoint for users who want stronger reasoning behavior than 7B without stepping straight into 32B deployment territory.",
+    researchHighlight:
+      "The reasoning post-training is layered on top of the Qwen2.5 14B architecture, so the model keeps its dense long-context grouped-attention profile.",
+    memoryNote:
+      "This is still a dense 14B-class checkpoint: weights dominate the fit decision, and context length becomes the next major lever after quantization.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-14B",
+        note: "NVIDIA publishes OpenReasoning-Nemotron-14B as a Transformers-format dense derivative of Qwen2.5-14B, and v1 models it accordingly across the runtime presets.",
+      }),
+    ],
+  },
+  {
+    id: "openreasoning-nemotron-32b",
+    displayName: "OpenReasoning Nemotron 32B",
+    family: "Nemotron",
+    organization: "NVIDIA",
+    architectureType: "Dense decoder-only transformer",
+    isMoe: false,
+    totalParams: 32_500_000_000,
+    numLayers: 64,
+    hiddenSize: 5120,
+    numAttentionHeads: 40,
+    numKvHeads: 8,
+    contextLength: 131_072,
+    vocabSize: 152_064,
+    license: "CC-BY-4.0 + Apache 2.0",
+    sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-32B",
+    shortDescription:
+      "Largest Nemotron checkpoint in this batch, intended as a serious reasoning model that still follows a plain dense Qwen2.5-style memory profile.",
+    researchHighlight:
+      "The 32B reasoning model keeps the dense grouped-query Qwen2.5 32B backbone, which makes the VRAM story much easier to reason about than a sparse frontier model.",
+    memoryNote:
+      "Dense resident weights dominate immediately, so single-GPU deployment quickly becomes a quantization-and-runtime-budget problem rather than a cache problem.",
+    inferenceProfiles: [
+      directProfile({
+        id: "official-bf16",
+        label: "Official BF16 checkpoint",
+        effectiveDtype: "bf16",
+        weightBytes: 2,
+        supportedRuntimes: ALL_RUNTIMES,
+        sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-32B",
+        note: "NVIDIA publishes OpenReasoning-Nemotron-32B as a dense Qwen2.5-32B derivative in Hugging Face Transformers format, and v1 models it with the same grouped-query cache geometry.",
+      }),
+    ],
+  },
+  {
     id: "gemma-2-9b",
     displayName: "Gemma 2 9B",
     family: "Gemma",
@@ -485,6 +798,7 @@ export const models: ModelSpec[] = [
         label: "Official ONNX INT4 checkpoint",
         effectiveDtype: "int4",
         weightBytes: bytesFromCheckpointGb(8.99, 14_700_000_000),
+        supportedRuntimes: ["transformers"],
         sourceUrl: "https://huggingface.co/microsoft/phi-4-onnx/tree/main/gpu/gpu-int4-rtn-block-32",
         note: "Microsoft's official phi-4 ONNX GPU INT4 checkpoint directory is about 8.99 GB on Hugging Face.",
       }),

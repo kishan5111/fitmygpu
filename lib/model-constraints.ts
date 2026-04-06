@@ -1,6 +1,20 @@
 import { models } from "@/data/models";
-import { QLORA_WEIGHT_BYTES } from "@/lib/constants";
-import type { Dtype, EstimateInput, InferenceProfile, Mode, ModelSpec } from "@/lib/types";
+import {
+  DEFAULT_KV_CACHE_DTYPE,
+  QLORA_WEIGHT_BYTES,
+  TRANSFORMERS_BASELINE_BATCH_SIZE,
+  TRANSFORMERS_BASELINE_CONTEXT_LENGTH,
+  TRAINING_ENABLED,
+} from "@/lib/constants";
+import { ALL_RUNTIMES, runtimeSupportsKvCacheDtype } from "@/lib/runtime";
+import type {
+  Dtype,
+  EstimateInput,
+  InferenceProfile,
+  Mode,
+  ModelSpec,
+  RuntimeId,
+} from "@/lib/types";
 
 const modelMap = new Map(models.map((model) => [model.id, model]));
 
@@ -14,6 +28,7 @@ const proxyProfiles: InferenceProfile[] = [
     sourceUrl: "",
     weightMode: "direct",
     weightBytes: 4,
+    supportedRuntimes: ALL_RUNTIMES,
   },
   {
     id: "proxy-fp8",
@@ -24,6 +39,7 @@ const proxyProfiles: InferenceProfile[] = [
     sourceUrl: "",
     weightMode: "direct",
     weightBytes: 1,
+    supportedRuntimes: ALL_RUNTIMES,
   },
   {
     id: "proxy-int8",
@@ -34,16 +50,18 @@ const proxyProfiles: InferenceProfile[] = [
     sourceUrl: "",
     weightMode: "direct",
     weightBytes: 1,
+    supportedRuntimes: ALL_RUNTIMES,
   },
   {
     id: "proxy-int4",
     label: "Proxy 4-bit estimate",
     effectiveDtype: "int4",
     official: false,
-    note: "Fallback 4-bit estimate using the generic v0 bytes-per-parameter assumption rather than an official checkpoint size.",
+    note: "Fallback 4-bit estimate using the generic estimator bytes-per-parameter assumption rather than an official checkpoint size.",
     sourceUrl: "",
     weightMode: "direct",
     weightBytes: QLORA_WEIGHT_BYTES,
+    supportedRuntimes: ALL_RUNTIMES,
   },
 ];
 
@@ -56,13 +74,26 @@ export function getInferenceProfiles(modelOrId: ModelSpec | string): InferencePr
   return [...model.inferenceProfiles, ...proxyProfiles];
 }
 
+export function getCompatibleInferenceProfiles(
+  modelOrId: ModelSpec | string,
+  runtimeId: RuntimeId,
+): InferenceProfile[] {
+  return getInferenceProfiles(modelOrId).filter((profile) =>
+    profileSupportsRuntime(profile, runtimeId),
+  );
+}
+
 export function getInferenceProfile(
   modelOrId: ModelSpec | string,
   inferenceProfileId?: string,
   fallbackDtype?: Dtype,
+  runtimeId?: RuntimeId,
 ): InferenceProfile {
   const model = typeof modelOrId === "string" ? getModelSpec(modelOrId) : modelOrId;
-  const available = getInferenceProfiles(model);
+  const available =
+    runtimeId === undefined
+      ? getInferenceProfiles(model)
+      : getCompatibleInferenceProfiles(model, runtimeId);
 
   if (inferenceProfileId) {
     const exact = available.find((profile) => profile.id === inferenceProfileId);
@@ -71,16 +102,67 @@ export function getInferenceProfile(
     }
   }
 
-  return pickInferenceProfileForDtype(model, fallbackDtype ?? "bf16");
+  return (
+    pickInferenceProfileForDtype(fallbackDtype ?? "bf16", available) ??
+    getInferenceProfiles(model)[0]
+  );
+}
+
+export function getCompatibleInferenceProfile(
+  modelOrId: ModelSpec | string,
+  runtimeId: RuntimeId,
+  inferenceProfileId?: string,
+  fallbackDtype?: Dtype,
+): InferenceProfile | null {
+  const model = typeof modelOrId === "string" ? getModelSpec(modelOrId) : modelOrId;
+  const available = getCompatibleInferenceProfiles(model, runtimeId);
+
+  if (available.length === 0) {
+    return null;
+  }
+
+  if (inferenceProfileId) {
+    const exact = available.find((profile) => profile.id === inferenceProfileId);
+    if (exact) {
+      return exact;
+    }
+  }
+
+  return pickInferenceProfileForDtype(fallbackDtype ?? "bf16", available) ?? available[0];
+}
+
+export function hasCompatibleInferenceProfile(
+  modelOrId: ModelSpec | string,
+  runtimeId: RuntimeId,
+): boolean {
+  return getCompatibleInferenceProfiles(modelOrId, runtimeId).length > 0;
+}
+
+export function getInferenceProfileSourceUrl(
+  modelOrId: ModelSpec | string,
+  inferenceProfileId: string | undefined,
+  runtimeId?: RuntimeId,
+  fallbackDtype?: Dtype,
+): string {
+  const model = typeof modelOrId === "string" ? getModelSpec(modelOrId) : modelOrId;
+  const profile = getInferenceProfile(
+    model,
+    inferenceProfileId,
+    fallbackDtype,
+    runtimeId,
+  );
+
+  return profile.sourceUrl || model.sourceUrl;
 }
 
 export function applyModelConstraints(input: EstimateInput): EstimateInput {
   const model = getModelSpec(input.modelId);
-  const supportedModes = model.supportedModes ?? ["inference", "training"];
+  const supportedModes = getSupportedModes(model);
   const nextMode = supportedModes.includes(input.mode) ? input.mode : supportedModes[0];
   const nextDtype = model.fixedDtype ?? input.dtype;
-  const nextInferenceProfile = getInferenceProfile(
+  const nextInferenceProfile = getCompatibleInferenceProfile(
     model,
+    input.runtimeId,
     input.inferenceProfileId,
     nextDtype,
   );
@@ -88,41 +170,74 @@ export function applyModelConstraints(input: EstimateInput): EstimateInput {
   return {
     ...input,
     mode: nextMode,
-    dtype: nextMode === "inference" ? nextInferenceProfile.effectiveDtype : nextDtype,
-    inferenceProfileId: nextInferenceProfile.id,
+    contextLength:
+      nextMode === "inference" && input.runtimeId === "transformers"
+        ? TRANSFORMERS_BASELINE_CONTEXT_LENGTH
+        : input.contextLength,
+    batchSize:
+      nextMode === "inference" && input.runtimeId === "transformers"
+        ? TRANSFORMERS_BASELINE_BATCH_SIZE
+        : input.batchSize,
+    kvCacheDtype:
+      nextMode === "inference" && runtimeSupportsKvCacheDtype(input.runtimeId)
+        ? input.kvCacheDtype
+        : DEFAULT_KV_CACHE_DTYPE,
+    dtype:
+      nextMode === "inference" && nextInferenceProfile
+        ? nextInferenceProfile.effectiveDtype
+        : nextDtype,
+    inferenceProfileId:
+      nextMode === "inference" ? nextInferenceProfile?.id ?? "" : input.inferenceProfileId,
   };
 }
 
 export function modelSupportsMode(model: ModelSpec, mode: Mode): boolean {
-  return (model.supportedModes ?? ["inference", "training"]).includes(mode);
+  return getSupportedModes(model).includes(mode);
 }
 
-function pickInferenceProfileForDtype(model: ModelSpec, dtype: Dtype): InferenceProfile {
+function getSupportedModes(model: ModelSpec): Mode[] {
+  const supportedModes = model.supportedModes ?? ["inference", "training"];
+
+  if (!TRAINING_ENABLED) {
+    return ["inference"];
+  }
+
+  return supportedModes;
+}
+
+function pickInferenceProfileForDtype(
+  dtype: Dtype,
+  availableProfiles: InferenceProfile[],
+): InferenceProfile | undefined {
   if (dtype === "fp32") {
-    return proxyProfiles[0];
+    return availableProfiles.find((profile) => profile.id === "proxy-fp32");
   }
 
   if (dtype === "fp8") {
     return (
-      model.inferenceProfiles.find((profile) => profile.effectiveDtype === "fp8") ??
-      proxyProfiles[1]
+      availableProfiles.find((profile) => profile.effectiveDtype === "fp8") ??
+      availableProfiles.find((profile) => profile.id === "proxy-fp8")
     );
   }
 
   if (dtype === "int8") {
-    return proxyProfiles[2];
+    return availableProfiles.find((profile) => profile.id === "proxy-int8");
   }
 
   if (dtype === "int4") {
     return (
-      model.inferenceProfiles.find((profile) => profile.effectiveDtype === "int4") ??
-      proxyProfiles[3]
+      availableProfiles.find((profile) => profile.effectiveDtype === "int4") ??
+      availableProfiles.find((profile) => profile.id === "proxy-int4")
     );
   }
 
   return (
-    model.inferenceProfiles.find(
+    availableProfiles.find(
       (profile) => profile.effectiveDtype === "bf16" || profile.effectiveDtype === "fp16",
-    ) ?? model.inferenceProfiles[0]
+    ) ?? availableProfiles[0]
   );
+}
+
+function profileSupportsRuntime(profile: InferenceProfile, runtimeId: RuntimeId): boolean {
+  return (profile.supportedRuntimes ?? ALL_RUNTIMES).includes(runtimeId);
 }

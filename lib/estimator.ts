@@ -1,5 +1,6 @@
 import { gpus } from "@/data/gpus";
 import {
+  BINARY_GIB,
   DECIMAL_GB,
   LORA_RANK,
   QLORA_WEIGHT_BYTES,
@@ -13,19 +14,28 @@ import {
 } from "@/lib/format";
 import {
   applyModelConstraints,
-  getInferenceProfile,
+  getCompatibleInferenceProfile,
   getModelSpec,
+  hasCompatibleInferenceProfile,
 } from "@/lib/model-constraints";
 import { normalizeEstimateInput } from "@/lib/query-state";
+import {
+  getRuntimeSpec,
+  runtimeSupportsKvCacheDtype,
+  VLLM_GPU_UTILIZATION,
+} from "@/lib/runtime";
 import type {
   BreakdownItem,
+  CacheStrategy,
   Dtype,
   EstimateInput,
   EstimateResult,
   GpuSpec,
   InferenceProfile,
+  KvCacheDtype,
   MathLine,
   ModelSpec,
+  RuntimeId,
   TrainingType,
 } from "@/lib/types";
 
@@ -63,6 +73,14 @@ export function estimateVram(input: EstimateInput): EstimateResult {
   const notes: string[] = [];
   const effectiveContextLength = Math.min(normalized.contextLength, model.contextLength);
 
+  if (!canEstimateInput(normalized)) {
+    throw new Error(
+      `${model.displayName} does not have a compatible inference profile for ${getRuntimeSpec(
+        normalized.runtimeId,
+      ).label}.`,
+    );
+  }
+
   if (normalized.contextLength > model.contextLength) {
     warnings.push(
       `Context clipped to ${formatInteger(model.contextLength)} tokens, the model's advertised window.`,
@@ -76,6 +94,53 @@ export function estimateVram(input: EstimateInput): EstimateResult {
       )} total params, while per-token compute is closer to ${formatParamCount(
         model.activeParams,
       )} active params.`,
+    );
+  }
+
+  if (getModelModality(model) === "multimodal") {
+    notes.push(
+      "This is a text-only estimate. Resident vision and projector weights stay counted in the selected checkpoint footprint, but image and video token memory is excluded in v1.",
+    );
+  }
+
+  if (getModelCacheStrategy(model) === "hybrid_attention") {
+    notes.push(
+      `KV cache is modeled only on the ${getKvCacheLayerCount(
+        model,
+      )} attention-bearing layers in this hybrid stack, not on all ${model.numLayers} layers.`,
+    );
+    if (getLinearStateLayerCount(model) > 0) {
+      notes.push(
+        "The linear-attention layers add a static recurrent state and short-convolution buffers. That term is modeled separately and does not scale with context length.",
+      );
+    }
+  }
+
+  if (getModelCacheStrategy(model) === "alternating_window_attention") {
+    notes.push(
+      `This model alternates ${getDenseAttentionLayerCount(model)} dense attention layers with ${getSlidingWindowAttentionLayerCount(
+        model,
+      )} sliding-window layers. The sliding-window layers only retain a ${formatInteger(
+        getSlidingWindowContextLength(model),
+      )}-token cache.`,
+    );
+  }
+
+  if (normalized.mode === "inference" && runtimeSupportsKvCacheDtype(normalized.runtimeId)) {
+    if (normalized.kvCacheDtype === "fp8") {
+      notes.push(
+        "KV cache dtype is set to FP8 for this runtime estimate. That halves the KV cache term versus BF16, but real deployments can need cache scaling metadata and may trade away some accuracy headroom.",
+      );
+    } else if (normalized.runtimeId === "vllm") {
+      notes.push(
+        "This vLLM estimate uses a BF16-equivalent KV cache baseline. In practice the CLI often leaves KV cache dtype on auto unless you explicitly force FP8.",
+      );
+    }
+  }
+
+  if (normalized.mode === "inference" && normalized.runtimeId === "transformers") {
+    notes.push(
+      "Transformers is modeled as a fixed single-request baseline in v1: 4K context and one active sequence. Switch to vLLM to plan serving context and concurrency.",
     );
   }
 
@@ -106,15 +171,23 @@ export function estimateVram(input: EstimateInput): EstimateResult {
     notes.push(
       `${model.displayName} is treated as a fixed ${formatDtype(
         model.fixedDtype,
-      )} checkpoint in v0.`,
+      )} checkpoint in the current release.`,
     );
   }
 
   if ((model.supportedModes ?? ["inference", "training"]).length === 1) {
-    notes.push(`${model.displayName} is inference-only in v0.`);
+    notes.push(`${model.displayName} is inference-only in the current release.`);
   }
 
   if (strategy.mode === "inference") {
+    const inferenceEstimate = buildInferenceEstimate(
+      normalized,
+      model,
+      gpu,
+      effectiveContextLength,
+      strategy,
+    );
+
     return finalizeResult(
       normalized,
       model,
@@ -122,13 +195,19 @@ export function estimateVram(input: EstimateInput): EstimateResult {
       effectiveContextLength,
       warnings,
       notes,
-      buildInferenceEstimate(
-        normalized,
-        model,
-        gpu,
-        effectiveContextLength,
-        strategy,
-      ),
+      {
+        ...inferenceEstimate,
+        maxConcurrencyAtContext:
+          normalized.runtimeId === "transformers"
+            ? undefined
+            : estimateMaxConcurrencyAtContext(
+                normalized,
+                model,
+                gpu,
+                effectiveContextLength,
+                strategy,
+              ),
+      },
     );
   }
 
@@ -157,17 +236,23 @@ function buildInferenceEstimate(
   strategy: Extract<Strategy, { mode: "inference" }>,
 ) {
   const kvHeads = model.numKvHeads ?? model.numAttentionHeads;
-  const headDim = model.hiddenSize / model.numAttentionHeads;
+  const headDim = getAttentionHeadDim(model);
+  const kvLayerCount = getKvCacheLayerCount(model);
+  const kvTokenFactor = getKvCacheTokenFactor(model, effectiveContextLength);
+  const linearLayerCount = getLinearStateLayerCount(model);
+  const linearStatePerLayerBytes = getLinearStateBytesPerLayer(model);
+  const kvCacheBytesPerElement = getKvCacheBytesPerElement(input.kvCacheDtype);
   const weightsBytes = model.totalParams * strategy.weightBytes;
   const kvCacheBytes =
     input.batchSize *
-    effectiveContextLength *
-    model.numLayers *
+    kvTokenFactor *
     2 *
     kvHeads *
     headDim *
-    strategy.kvBytes;
-  const subtotal = weightsBytes + kvCacheBytes;
+    kvCacheBytesPerElement;
+  const linearStateBytes =
+    input.batchSize * linearLayerCount * linearStatePerLayerBytes;
+  const subtotal = weightsBytes + kvCacheBytes + linearStateBytes;
   const overheadBytes = Math.max(1.5 * DECIMAL_GB, subtotal * 0.1);
   const totalBytes = subtotal + overheadBytes;
 
@@ -184,17 +269,35 @@ function buildInferenceEstimate(
       key: "kvCache",
       label: "KV cache",
       bytes: kvCacheBytes,
-      note: `Batch ${input.batchSize}, context ${formatInteger(
+      note: `${
+        input.runtimeId === "transformers" ? "Single request" : `Concurrency ${input.batchSize}`
+      }, context ${formatInteger(effectiveContextLength)}, ${describeKvCacheLayout(
+        model,
+        kvLayerCount,
         effectiveContextLength,
-      )}, ${model.numLayers} layers, ${kvHeads} KV heads.`,
-    },
-    {
-      key: "overhead",
-      label: "Runtime / safety overhead",
-      bytes: overheadBytes,
-      note: "Conservative buffer for allocator fragmentation, kernels, and runtime scratch space.",
+      )}, ${kvHeads} KV heads, ${formatDtype(
+        input.kvCacheDtype,
+      )} cache storage.`,
     },
   ];
+
+  if (linearStateBytes > 0) {
+    breakdown.push({
+      key: "linearState",
+      label: "Linear attention state",
+      bytes: linearStateBytes,
+      note: `${
+        input.runtimeId === "transformers" ? "Single request" : `Concurrency ${input.batchSize}`
+      }, ${linearLayerCount} linear-attention layers, static recurrent state, and short-convolution buffers. This term stays flat as context grows.`,
+    });
+  }
+
+  breakdown.push({
+    key: "overhead",
+    label: "Runtime / safety overhead",
+    bytes: overheadBytes,
+    note: "Conservative buffer for allocator fragmentation, kernels, and runtime scratch space.",
+  });
 
   const math: MathLine[] = [
     {
@@ -210,28 +313,58 @@ function buildInferenceEstimate(
     {
       label: "KV cache",
       symbolic:
-        "batch × context × layers × 2 × KV heads × head dim × 2 bytes",
+        "batch × effective KV tokens across attention layers × 2 × KV heads × head dim × bytes per KV element",
       substituted: `${input.batchSize} × ${formatInteger(
-        effectiveContextLength,
-      )} × ${model.numLayers} × 2 × ${kvHeads} × ${headDim} × ${
-        strategy.kvBytes
+        kvTokenFactor,
+      )} × 2 × ${kvHeads} × ${headDim} × ${
+        kvCacheBytesPerElement
       } = ${formatGb(kvCacheBytes)}`,
-      note: "Longer context, deeper models, and larger batches all expand the cache linearly.",
-    },
-    {
-      label: "Overhead",
-      symbolic: "max(1.5 GB, 10% of weights + KV cache)",
-      substituted: `max(1.5 GB, 10% of ${formatGb(subtotal)}) = ${formatGb(
-        overheadBytes,
-      )}`,
-      note: "This leaves room for runtime buffers instead of claiming an unrealistically exact fit.",
+      note:
+        getModelCacheStrategy(model) === "hybrid_attention"
+          ? `Only the attention-bearing layers contribute KV cache in this hybrid stack, and ${formatDtype(
+              input.kvCacheDtype,
+            )} controls the bytes per stored KV element.`
+          : getModelCacheStrategy(model) === "alternating_window_attention"
+            ? `Dense attention layers keep the full ${formatInteger(
+                effectiveContextLength,
+              )}-token cache, while sliding-window layers only keep ${formatInteger(
+                Math.min(effectiveContextLength, getSlidingWindowContextLength(model)),
+              )} tokens. ${formatDtype(input.kvCacheDtype)} controls the bytes per stored KV element.`
+          : `Longer context, deeper models, and larger batches all expand the cache linearly. ${formatDtype(
+              input.kvCacheDtype,
+            )} controls the bytes per stored KV element.`,
     },
   ];
+
+  if (linearStateBytes > 0) {
+    math.push({
+      label: "Linear state",
+      symbolic:
+        "batch × linear layers × (recurrent state + short-conv buffers) × state bytes",
+      substituted: `${input.batchSize} × ${linearLayerCount} × ${formatInteger(
+        linearStatePerLayerBytes / getLinearStateBytesPerElement(model),
+      )} × ${formatBytesPerParam(getLinearStateBytesPerElement(model))} = ${formatGb(
+        linearStateBytes,
+      )}`,
+      note:
+        "Hybrid Qwen3.5 layers keep a static recurrent state plus q/k/v short-convolution buffers. The published configs keep that state in float32, so it is modeled separately from the BF16 weight dtype.",
+    });
+  }
+
+  math.push({
+    label: "Overhead",
+    symbolic: "max(1.5 GB, 10% of weights + KV cache + linear state)",
+    substituted: `max(1.5 GB, 10% of ${formatGb(subtotal)}) = ${formatGb(
+      overheadBytes,
+    )}`,
+    note: "This leaves room for runtime buffers instead of claiming an unrealistically exact fit.",
+  });
 
   return {
     weightsBytes,
     masterWeightsBytes: 0,
     kvCacheBytes,
+    linearStateBytes,
     activationsBytes: 0,
     gradientsBytes: 0,
     optimizerBytes: 0,
@@ -420,7 +553,7 @@ function buildTrainingEstimate(
         strategy.computeBytes,
       )}${input.sequencePacking ? " × 0.85" : ""} = ${formatGb(activationsBytes)}`,
       note: input.sequencePacking
-        ? "Sequence packing trims the activation estimate by 15% in this v0 approximation."
+        ? "Sequence packing trims the activation estimate by 15% in this current approximation."
         : "Checkpointing and packing are the fastest levers for shrinking activation memory.",
     },
     {
@@ -475,6 +608,7 @@ function buildTrainingEstimate(
     weightsBytes,
     masterWeightsBytes,
     kvCacheBytes: 0,
+    linearStateBytes: 0,
     activationsBytes,
     gradientsBytes,
     optimizerBytes,
@@ -507,26 +641,37 @@ function finalizeResult(
     | "gpuBytes"
     | "headroomBytes"
     | "deficitBytes"
+    | "requiredGpuBytes"
+    | "fitMetricLabel"
     | "warnings"
     | "notes"
+    | "runtime"
+    | "runtimeNotes"
     | "tips"
     | "effectiveContextLength"
   >,
 ): EstimateResult {
-  const gpuBytes = gpu.vramGb * DECIMAL_GB;
-  const fits = partial.totalBytes <= gpuBytes;
-  const headroomBytes = fits ? gpuBytes - partial.totalBytes : 0;
-  const deficitBytes = fits ? 0 : partial.totalBytes - gpuBytes;
+  const gpuBytes = getGpuCapacityBytes(gpu);
+  const runtime = getRuntimeSpec(input.runtimeId);
+  const runtimeNotes = buildRuntimeNotes(runtime.id);
+  const { requiredGpuBytes, fitMetricLabel } = resolveRequiredGpuBytes(runtime.id, partial);
+  const fits = requiredGpuBytes <= gpuBytes;
+  const headroomBytes = fits ? gpuBytes - requiredGpuBytes : 0;
+  const deficitBytes = fits ? 0 : requiredGpuBytes - gpuBytes;
 
   return {
     ...partial,
     input,
     model,
     gpu,
+    runtime,
+    runtimeNotes,
     fits,
     gpuBytes,
     headroomBytes,
     deficitBytes,
+    requiredGpuBytes,
+    fitMetricLabel,
     warnings,
     notes,
     tips: generateTips({
@@ -562,11 +707,15 @@ function generateTips(args: {
   }
 
   if (!args.fits && args.input.contextLength > 2048 && args.kvCacheBytes > 0) {
+    if (args.input.runtimeId !== "transformers") {
     tips.push("Reduce context length if KV cache is the fastest-growing term in the estimate.");
+    }
   }
 
   if (!args.fits && args.input.batchSize > 1) {
-    tips.push("Lower batch size to shrink KV cache and activation memory linearly.");
+    if (args.input.runtimeId !== "transformers") {
+      tips.push("Lower concurrent requests to shrink KV cache and runtime memory linearly.");
+    }
   }
 
   if (
@@ -604,9 +753,22 @@ function generateTips(args: {
 
 function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
   if (input.mode === "inference") {
-    const profile = getInferenceProfile(model, input.inferenceProfileId, input.dtype);
+    const profile = getCompatibleInferenceProfile(
+      model,
+      input.runtimeId,
+      input.inferenceProfileId,
+      input.dtype,
+    );
     const warnings: string[] = [];
     let proxyReason: string | undefined;
+    if (!profile) {
+      throw new Error(
+        `${model.displayName} does not have a compatible inference profile for ${getRuntimeSpec(
+          input.runtimeId,
+        ).label}.`,
+      );
+    }
+
     let weightNote = profile.note;
 
     if (!profile.official) {
@@ -630,7 +792,7 @@ function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
         profile.weightMode === "calibrated"
           ? solveOfficialInferenceWeightBytes(model, profile)
           : profile.weightBytes ?? getInferenceWeightBytes(profile.effectiveDtype),
-      kvBytes: 2,
+      kvBytes: getKvCacheBytesPerElement(input.kvCacheDtype),
       warnings,
       weightNote,
       proxyReason,
@@ -649,7 +811,7 @@ function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
         warnings: [
           `${formatDtype(
             input.dtype,
-          )} full fine-tuning is not a clean v0 baseline. Using a BF16 SFT proxy instead.`,
+          )} full fine-tuning is not a clean current-release baseline. Using a BF16 SFT proxy instead.`,
         ],
         proxyReason:
           "Full SFT usually keeps trainable weights, gradients, and optimizer state in 16-bit or 32-bit form even if loading starts from a quantized checkpoint.",
@@ -681,7 +843,7 @@ function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
           "4-bit LoRA behaves closer to QLoRA in practice. Using the QLoRA proxy for this estimate.",
         ],
         proxyReason:
-          "In v0, 4-bit adapter training is modeled as QLoRA because the frozen base typically sits in 4-bit form while adapters, grads, and activations stay in 16-bit compute.",
+          "In the current release, 4-bit adapter training is modeled as QLoRA because the frozen base typically sits in 4-bit form while adapters, grads, and activations stay in 16-bit compute.",
       };
     }
 
@@ -736,7 +898,7 @@ function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
             )} is being proxied to a QLoRA-style GRPO baseline. Real memory depends heavily on rollout shape.`,
           ],
     proxyReason:
-      "GRPO is modeled as QLoRA-style adapter training plus extra rollout memory so the estimate stays conservative and explainable in v0.",
+      "GRPO is modeled as QLoRA-style adapter training plus extra rollout memory so the estimate stays conservative and explainable in the current release.",
   };
 }
 
@@ -752,11 +914,11 @@ function solveOfficialInferenceWeightBytes(
   const targetBatchSize = profile.targetBatchSize ?? 1;
   const targetContextLength = profile.targetContextLength ?? 0;
   const kvHeads = model.numKvHeads ?? model.numAttentionHeads;
-  const headDim = model.hiddenSize / model.numAttentionHeads;
+  const headDim = getAttentionHeadDim(model);
+  const kvTokenFactor = getKvCacheTokenFactor(model, targetContextLength);
   const kvBytes =
     targetBatchSize *
-    targetContextLength *
-    model.numLayers *
+    kvTokenFactor *
     2 *
     kvHeads *
     headDim *
@@ -801,4 +963,214 @@ function getGpu(gpuId: string, customVramGb: number): GpuSpec {
     vramGb: customVramGb,
     displayName: `Custom GPU ${customVramGb}GB`,
   };
+}
+
+function getGpuCapacityBytes(gpu: GpuSpec): number {
+  return gpu.vramGb * BINARY_GIB;
+}
+
+export function canEstimateInput(input: EstimateInput): boolean {
+  if (input.mode !== "inference") {
+    return true;
+  }
+
+  return hasCompatibleInferenceProfile(input.modelId, input.runtimeId);
+}
+
+function resolveRequiredGpuBytes(
+  runtimeId: RuntimeId,
+  partial: Pick<
+    EstimateResult,
+    | "weightsBytes"
+    | "kvCacheBytes"
+    | "linearStateBytes"
+    | "overheadBytes"
+    | "totalBytes"
+    | "activationsBytes"
+    | "gradientsBytes"
+    | "optimizerBytes"
+    | "masterWeightsBytes"
+    | "grpoExtraBytes"
+  >,
+) {
+  if (runtimeId === "vllm") {
+    return {
+      requiredGpuBytes: partial.totalBytes / VLLM_GPU_UTILIZATION,
+      fitMetricLabel: "Required GPU VRAM (0.9 budget)",
+    };
+  }
+
+  return {
+    requiredGpuBytes: partial.totalBytes,
+    fitMetricLabel: "Required GPU VRAM",
+  };
+}
+
+function estimateMaxConcurrencyAtContext(
+  input: EstimateInput,
+  model: ModelSpec,
+  gpu: GpuSpec,
+  effectiveContextLength: number,
+  strategy: Extract<Strategy, { mode: "inference" }>,
+): number {
+  const gpuBytes = getGpuCapacityBytes(gpu);
+  const requiredForBatchSize = (batchSize: number) =>
+    resolveRequiredGpuBytes(
+      input.runtimeId,
+      buildInferenceEstimate(
+        { ...input, batchSize },
+        model,
+        gpu,
+        effectiveContextLength,
+        strategy,
+      ),
+    ).requiredGpuBytes;
+
+  if (requiredForBatchSize(1) > gpuBytes) {
+    return 0;
+  }
+
+  let low = 1;
+  let high = Math.max(2, input.batchSize);
+
+  while (high < 4096 && requiredForBatchSize(high) <= gpuBytes) {
+    low = high;
+    high = Math.min(4096, high * 2);
+  }
+
+  if (requiredForBatchSize(high) <= gpuBytes) {
+    return high;
+  }
+
+  while (low + 1 < high) {
+    const mid = Math.floor((low + high) / 2);
+
+    if (requiredForBatchSize(mid) <= gpuBytes) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
+}
+
+function buildRuntimeNotes(runtimeId: RuntimeId): string[] {
+  switch (runtimeId) {
+    case "transformers":
+      return [
+        "Transformers is treated as a single-request baseline in v1, so the calculator fixes it to 4K context and one active sequence instead of exposing serving controls.",
+      ];
+    case "vllm":
+      return [
+        "vLLM converts the core estimate into nominal card VRAM by dividing by the default --gpu-memory-utilization=0.9 executor budget.",
+        "vLLM also supports a lower-precision KV cache path; this calculator models BF16 and FP8 cache storage explicitly.",
+        "The app also derives a max concurrent-sequence estimate at the selected context length.",
+        "That concurrency estimate assumes all active sequences are simultaneously resident at the selected full context, which is more conservative than scheduler caps like --max-num-seqs or per-iteration token limits.",
+      ];
+  }
+}
+
+function getKvCacheLayerCount(model: ModelSpec): number {
+  if (getModelCacheStrategy(model) === "hybrid_attention") {
+    return model.attentionLayerCount ?? model.numLayers;
+  }
+
+  if (getModelCacheStrategy(model) === "alternating_window_attention") {
+    return getDenseAttentionLayerCount(model) + getSlidingWindowAttentionLayerCount(model);
+  }
+
+  return model.numLayers;
+}
+
+function getModelCacheStrategy(model: ModelSpec): CacheStrategy {
+  return model.cacheStrategy ?? "standard_gqa";
+}
+
+function getModelModality(model: ModelSpec) {
+  return model.modality ?? "text";
+}
+
+function getAttentionHeadDim(model: ModelSpec): number {
+  return model.attentionHeadDim ?? model.hiddenSize / model.numAttentionHeads;
+}
+
+function getKvCacheBytesPerElement(kvCacheDtype: KvCacheDtype): number {
+  return kvCacheDtype === "fp8" ? 1 : 2;
+}
+
+function getLinearStateLayerCount(model: ModelSpec): number {
+  return Math.max(0, model.numLayers - getKvCacheLayerCount(model));
+}
+
+function getKvCacheTokenFactor(model: ModelSpec, effectiveContextLength: number): number {
+  if (getModelCacheStrategy(model) === "alternating_window_attention") {
+    return (
+      getDenseAttentionLayerCount(model) * effectiveContextLength +
+      getSlidingWindowAttentionLayerCount(model) *
+        Math.min(effectiveContextLength, getSlidingWindowContextLength(model))
+    );
+  }
+
+  return getKvCacheLayerCount(model) * effectiveContextLength;
+}
+
+function getLinearStateBytesPerLayer(model: ModelSpec): number {
+  if (getModelCacheStrategy(model) !== "hybrid_attention") {
+    return 0;
+  }
+
+  const keyHeads = model.linearNumKeyHeads;
+  const valueHeads = model.linearNumValueHeads;
+  const keyHeadDim = model.linearKeyHeadDim;
+  const valueHeadDim = model.linearValueHeadDim;
+
+  if (!keyHeads || !valueHeads || !keyHeadDim || !valueHeadDim) {
+    return 0;
+  }
+
+  const keyProjectionDim = keyHeads * keyHeadDim;
+  const valueProjectionDim = valueHeads * valueHeadDim;
+  const recurrentStateElements =
+    keyProjectionDim * Math.ceil(valueProjectionDim / keyHeads);
+  const convKernelDim = model.linearConvKernelDim ?? 0;
+  const convStateElements =
+    convKernelDim * (keyProjectionDim * 2 + valueProjectionDim);
+
+  return (
+    (recurrentStateElements + convStateElements) *
+    getLinearStateBytesPerElement(model)
+  );
+}
+
+function getLinearStateBytesPerElement(model: ModelSpec): number {
+  return model.linearStateBytesPerElement ?? 2;
+}
+
+function getDenseAttentionLayerCount(model: ModelSpec): number {
+  return model.denseAttentionLayerCount ?? Math.ceil(model.numLayers / 2);
+}
+
+function getSlidingWindowAttentionLayerCount(model: ModelSpec): number {
+  return model.slidingWindowAttentionLayerCount ?? Math.floor(model.numLayers / 2);
+}
+
+function getSlidingWindowContextLength(model: ModelSpec): number {
+  return model.slidingWindowContextLength ?? 128;
+}
+
+function describeKvCacheLayout(
+  model: ModelSpec,
+  kvLayerCount: number,
+  effectiveContextLength: number,
+) {
+  if (getModelCacheStrategy(model) === "alternating_window_attention") {
+    return `${getDenseAttentionLayerCount(model)} dense layers @ ${formatInteger(
+      effectiveContextLength,
+    )} tokens + ${getSlidingWindowAttentionLayerCount(model)} sliding-window layers @ ${formatInteger(
+      Math.min(effectiveContextLength, getSlidingWindowContextLength(model)),
+    )} tokens`;
+  }
+
+  return `${kvLayerCount} KV-bearing layers`;
 }

@@ -1,10 +1,17 @@
 import { gpus } from "@/data/gpus";
 import { models } from "@/data/models";
-import { DEFAULT_INPUT } from "@/lib/constants";
+import {
+  DEFAULT_INPUT,
+  DEFAULT_KV_CACHE_DTYPE,
+  TRAINING_ENABLED,
+} from "@/lib/constants";
+import { ALL_RUNTIMES } from "@/lib/runtime";
 import type {
   Dtype,
   EstimateInput,
+  KvCacheDtype,
   Mode,
+  RuntimeId,
   TrainingType,
 } from "@/lib/types";
 
@@ -18,14 +25,18 @@ type SearchParamsLike =
 
 type SearchParamsRecord = Record<string, string | string[] | undefined>;
 
-const modeValues = new Set<Mode>(["inference", "training"]);
+const modeValues = new Set<Mode>(
+  TRAINING_ENABLED ? ["inference", "training"] : ["inference"],
+);
 const trainingTypeValues = new Set<TrainingType>([
   "sft",
   "lora",
   "qlora",
   "grpo",
 ]);
+const runtimeValues = new Set<RuntimeId>(ALL_RUNTIMES);
 const dtypeValues = new Set<Dtype>(["fp32", "fp16", "bf16", "fp8", "int8", "int4"]);
+const kvCacheDtypeValues = new Set<KvCacheDtype>(["bf16", "fp8"]);
 const modelIds = new Set(models.map((model) => model.id));
 const gpuIds = new Set(gpus.map((gpu) => gpu.id));
 
@@ -45,6 +56,8 @@ export function parseSearchParams(searchParams: SearchParamsLike): EstimateInput
 
   const mode = read("mode");
   const trainingType = read("train");
+  const runtimeId = read("rt");
+  const kvCacheDtype = read("kvd");
   const dtype = read("dtype");
   const inferenceProfileId = read("profile");
   const modelId = read("model");
@@ -58,6 +71,12 @@ export function parseSearchParams(searchParams: SearchParamsLike): EstimateInput
     trainingType: trainingTypeValues.has(trainingType as TrainingType)
       ? (trainingType as TrainingType)
       : DEFAULT_INPUT.trainingType,
+    runtimeId: runtimeValues.has(runtimeId as RuntimeId)
+      ? (runtimeId as RuntimeId)
+      : DEFAULT_INPUT.runtimeId,
+    kvCacheDtype: kvCacheDtypeValues.has(kvCacheDtype as KvCacheDtype)
+      ? (kvCacheDtype as KvCacheDtype)
+      : DEFAULT_KV_CACHE_DTYPE,
     dtype: dtypeValues.has(dtype as Dtype) ? (dtype as Dtype) : DEFAULT_INPUT.dtype,
     inferenceProfileId: inferenceProfileId ?? "",
     modelId: modelIds.has(modelId ?? "") ? (modelId as string) : DEFAULT_INPUT.modelId,
@@ -83,7 +102,8 @@ export function serializeEstimateInput(input: EstimateInput): URLSearchParams {
   const normalized = normalizeEstimateInput(input);
   const params = new URLSearchParams();
   params.set("mode", normalized.mode);
-  params.set("train", normalized.trainingType);
+  params.set("rt", normalized.runtimeId);
+  params.set("kvd", normalized.kvCacheDtype);
   params.set("model", normalized.modelId);
   params.set("dtype", normalized.dtype);
   params.set("profile", normalized.inferenceProfileId);
@@ -91,8 +111,13 @@ export function serializeEstimateInput(input: EstimateInput): URLSearchParams {
   params.set("vram", normalized.customVramGb.toString());
   params.set("ctx", normalized.contextLength.toString());
   params.set("batch", normalized.batchSize.toString());
-  params.set("gc", normalized.gradientCheckpointing ? "1" : "0");
-  params.set("pack", normalized.sequencePacking ? "1" : "0");
+
+  if (TRAINING_ENABLED) {
+    params.set("train", normalized.trainingType);
+    params.set("gc", normalized.gradientCheckpointing ? "1" : "0");
+    params.set("pack", normalized.sequencePacking ? "1" : "0");
+  }
+
   return params;
 }
 

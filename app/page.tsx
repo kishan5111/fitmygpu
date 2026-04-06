@@ -1,5 +1,6 @@
 import { WillItFitApp } from "@/components/will-it-fit-app";
-import { estimateVram } from "@/lib/estimator";
+import { canEstimateInput, estimateVram } from "@/lib/estimator";
+import { applyModelConstraints } from "@/lib/model-constraints";
 import {
   hasMeaningfulSearchParams,
   parseSearchParams,
@@ -11,9 +12,11 @@ type PageProps = {
 
 export default async function Page({ searchParams }: PageProps) {
   const resolvedSearchParams = (await searchParams) ?? {};
-  const initialInput = parseSearchParams(resolvedSearchParams);
+  const initialInput = applyModelConstraints(parseSearchParams(resolvedSearchParams));
   const initialResult = hasMeaningfulSearchParams(resolvedSearchParams)
-    ? estimateVram(initialInput)
+    ? canEstimateInput(initialInput)
+      ? estimateVram(initialInput)
+      : null
     : null;
 
   return (
