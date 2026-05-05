@@ -24,6 +24,7 @@ const proxyProfiles: InferenceProfile[] = [
     label: "Proxy FP32 estimate",
     effectiveDtype: "fp32",
     official: false,
+    confidence: "proxy",
     note: "Fallback dense-style FP32 estimate when no official FP32 deployment checkpoint is selected.",
     sourceUrl: "",
     weightMode: "direct",
@@ -35,6 +36,7 @@ const proxyProfiles: InferenceProfile[] = [
     label: "Proxy FP8 estimate",
     effectiveDtype: "fp8",
     official: false,
+    confidence: "proxy",
     note: "Fallback FP8-style estimate. Real deployed FP8 checkpoints can carry extra metadata or packing overhead.",
     sourceUrl: "",
     weightMode: "direct",
@@ -46,6 +48,7 @@ const proxyProfiles: InferenceProfile[] = [
     label: "Proxy INT8 estimate",
     effectiveDtype: "int8",
     official: false,
+    confidence: "proxy",
     note: "Fallback INT8 estimate. Real INT8 checkpoints can land above or below this depending on scales, zeros, and packing.",
     sourceUrl: "",
     weightMode: "direct",
@@ -57,6 +60,7 @@ const proxyProfiles: InferenceProfile[] = [
     label: "Proxy 4-bit estimate",
     effectiveDtype: "int4",
     official: false,
+    confidence: "proxy",
     note: "Fallback 4-bit estimate using the generic estimator bytes-per-parameter assumption rather than an official checkpoint size.",
     sourceUrl: "",
     weightMode: "direct",
@@ -178,6 +182,10 @@ export function applyModelConstraints(input: EstimateInput): EstimateInput {
       nextMode === "inference" && input.runtimeId === "transformers"
         ? TRANSFORMERS_BASELINE_BATCH_SIZE
         : input.batchSize,
+    gpuCount:
+      nextMode === "inference" && input.runtimeId === "transformers"
+        ? 1
+        : input.gpuCount,
     kvCacheDtype:
       nextMode === "inference" && runtimeSupportsKvCacheDtype(input.runtimeId)
         ? input.kvCacheDtype

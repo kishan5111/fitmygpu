@@ -14,7 +14,6 @@ export const kvCacheDtypeOptions: Array<{
 ];
 
 export const ALL_RUNTIMES = runtimeOptions.map((runtime) => runtime.id);
-export const VLLM_GPU_UTILIZATION = 0.9;
 
 const runtimeMap = new Map(runtimeOptions.map((runtime) => [runtime.id, runtime]));
 

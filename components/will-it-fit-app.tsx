@@ -20,7 +20,8 @@ import {
   formatGb,
   formatInteger,
 } from "@/lib/format";
-import { estimateVram } from "@/lib/estimator";
+import { estimateVram, estimateVramForModel } from "@/lib/estimator";
+import type { HfImportResult } from "@/lib/hf-import";
 import {
   applyModelConstraints,
   getCompatibleInferenceProfile,
@@ -37,7 +38,11 @@ import {
   runtimeSupportsKvCacheDtype,
 } from "@/lib/runtime";
 import { normalizeEstimateInput, serializeEstimateInput } from "@/lib/query-state";
-import type { EstimateInput, EstimateResult, ModelSpec } from "@/lib/types";
+import type {
+  EstimateInput,
+  EstimateResult,
+  ModelSpec,
+} from "@/lib/types";
 
 type Props = {
   initialInput: EstimateInput;
@@ -53,9 +58,17 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
   const resultsRef = useRef<HTMLDivElement | null>(null);
   const hasCalculatedRef = useRef(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [formState, setFormState] = useState(initialInput);
+  const [hfModelUrl, setHfModelUrl] = useState("");
+  const [hfImportMessage, setHfImportMessage] = useState<string | null>(null);
+  const [hfImportPending, setHfImportPending] = useState(false);
+  const [importedModel, setImportedModel] = useState<ModelSpec | null>(null);
+  const [formState, setFormState] = useState(() =>
+    normalizeEstimateInput(initialInput),
+  );
   const [result, setResult] = useState<EstimateResult | null>(initialResult);
-  const selectedModel = models.find((model) => model.id === formState.modelId) ?? models[0];
+  const localSelectedModel = models.find((model) => model.id === formState.modelId);
+  const selectedModel =
+    importedModel?.id === formState.modelId ? importedModel : localSelectedModel ?? models[0];
   const compatibleInferenceProfiles = getCompatibleInferenceProfiles(
     selectedModel,
     formState.runtimeId,
@@ -73,10 +86,20 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
   const showsKvCacheDtype = runtimeSupportsKvCacheDtype(formState.runtimeId);
   const showsAdvancedOptions = showsServingControls || formState.gpuId === "custom";
   const hasCompatibleProfiles = compatibleInferenceProfiles.length > 0;
-  const modelOptions = [...models].sort(compareModelDropdownOrder).map((model) => ({
-    label: model.displayName,
-    value: model.id,
-  }));
+  const modelOptions = [
+    ...(importedModel
+      ? [
+          {
+            label: `${importedModel.displayName} (HF estimate)`,
+            value: importedModel.id,
+          },
+        ]
+      : []),
+    ...[...models].sort(compareModelDropdownOrder).map((model) => ({
+      label: model.displayName,
+      value: model.id,
+    })),
+  ];
   const runtimeFieldOptions = runtimeOptions.map((runtime) => ({
     label: runtime.label,
     value: runtime.id,
@@ -114,7 +137,15 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
   }
 
   function handleModelChange(modelId: string) {
-    setFormState((current) => applyModelConstraints({ ...current, modelId }));
+    const nextModel = importedModel?.id === modelId ? importedModel : undefined;
+
+    if (!nextModel) {
+      setImportedModel(null);
+    }
+
+    setFormState((current) =>
+      applyConstraintsForModel({ ...current, modelId }, nextModel),
+    );
   }
 
   function handleInferenceProfileChange(profileId: string) {
@@ -130,24 +161,37 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
     }
 
     setFormState((current) =>
-      applyModelConstraints({
-        ...current,
-        dtype: profile.effectiveDtype,
-        inferenceProfileId: profile.id,
-      }),
+      applyConstraintsForModel(
+        {
+          ...current,
+          dtype: profile.effectiveDtype,
+          inferenceProfileId: profile.id,
+        },
+        selectedModel,
+      ),
     );
   }
 
   function handleRuntimeChange(runtimeId: string) {
     setFormState((current) =>
-      applyModelConstraints({
-        ...current,
-        runtimeId: runtimeId as EstimateInput["runtimeId"],
-      }),
+      applyConstraintsForModel(
+        {
+          ...current,
+          runtimeId: runtimeId as EstimateInput["runtimeId"],
+        },
+        selectedModel,
+      ),
     );
   }
 
-  function handleNumberChange<K extends "contextLength" | "batchSize" | "customVramGb">(
+  function handleNumberChange<
+    K extends
+      | "contextLength"
+      | "batchSize"
+      | "gpuCount"
+      | "customVramGb"
+      | "vllmGpuUtilization",
+  >(
     key: K,
     rawValue: string,
   ) {
@@ -159,13 +203,67 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
     updateField(key, parsed as EstimateInput[K]);
   }
 
+  async function handleHfImport() {
+    setHfImportPending(true);
+    setHfImportMessage(null);
+
+    try {
+      const response = await fetch(`/api/hf-model?url=${encodeURIComponent(hfModelUrl)}`);
+      const payload = (await response.json()) as HfImportResult | { error?: string };
+
+      if (!response.ok || "error" in payload) {
+        const errorMessage = "error" in payload ? payload.error : undefined;
+
+        setHfImportMessage(errorMessage ?? "Could not import that Hugging Face model.");
+        return;
+      }
+
+      const importResult = payload as HfImportResult;
+
+      if (importResult.status === "known") {
+        setImportedModel(null);
+        setFormState((current) =>
+          applyModelConstraints({ ...current, modelId: importResult.modelId }),
+        );
+        setHfImportMessage(`Matched ${importResult.repoId} to a verified registry entry.`);
+        return;
+      }
+
+      const estimatedModel = importResult.model;
+      const firstProfile = estimatedModel.inferenceProfiles[0];
+      setImportedModel(estimatedModel);
+      setFormState((current) =>
+        applyConstraintsForModel(
+          {
+            ...current,
+            modelId: estimatedModel.id,
+            dtype: firstProfile?.effectiveDtype ?? current.dtype,
+            inferenceProfileId: firstProfile?.id ?? "",
+          },
+          estimatedModel,
+        ),
+      );
+      setHfImportMessage(`Imported ${importResult.repoId} as an estimated config profile.`);
+    } catch {
+      setHfImportMessage("Could not reach the Hugging Face import endpoint.");
+    } finally {
+      setHfImportPending(false);
+    }
+  }
+
   function handleCalculate() {
     if (!hasCompatibleProfiles) {
       return;
     }
 
-    const normalized = applyModelConstraints(normalizeEstimateInput(formState));
-    const nextResult = estimateVram(normalized);
+    const normalized = applyConstraintsForModel(
+      normalizeEstimateInput(formState),
+      selectedModel,
+    );
+    const nextResult =
+      importedModel?.id === normalized.modelId
+        ? estimateVramForModel(normalized, importedModel)
+        : estimateVram(normalized);
     const params = serializeEstimateInput(normalized);
 
     hasCalculatedRef.current = true;
@@ -199,6 +297,32 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             handleCalculate();
           }}
         >
+          <div className="rounded-[1.6rem] border border-[var(--line)] bg-white/50 p-4">
+            <FieldLabel label="Hugging Face URL" />
+            <div className="mt-3 flex flex-col gap-3 md:flex-row">
+              <input
+                className={fieldClassName}
+                onChange={(event) => setHfModelUrl(event.target.value)}
+                placeholder="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct"
+                type="text"
+                value={hfModelUrl}
+              />
+              <button
+                className="inline-flex items-center justify-center rounded-full border border-[var(--line)] px-5 py-3 text-sm font-medium text-[var(--ink)] transition hover:border-[var(--line-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={hfImportPending || hfModelUrl.trim().length === 0}
+                onClick={handleHfImport}
+                type="button"
+              >
+                {hfImportPending ? "Importing" : "Import"}
+              </button>
+            </div>
+            {hfImportMessage ? (
+              <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
+                {hfImportMessage}
+              </p>
+            ) : null}
+          </div>
+
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
             <div className="space-y-3">
               <FieldLabel label="Model" />
@@ -210,43 +334,26 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             </div>
 
             <div className="space-y-3">
+              <FieldLabel label="GPU" />
+              <SelectField
+                onChange={(value) => updateField("gpuId", value)}
+                options={gpuFieldOptions}
+                value={formState.gpuId}
+              />
+              {formState.gpuId === "custom" ? (
+                <p className="text-sm leading-6 text-[var(--muted)]">
+                  Enter the custom VRAM value in Advanced options below.
+                </p>
+              ) : null}
+            </div>
+
+            <div className="space-y-3">
               <FieldLabel label="Runtime" />
               <SelectField
                 onChange={handleRuntimeChange}
                 options={runtimeFieldOptions}
                 value={formState.runtimeId}
               />
-            </div>
-
-            {showsKvCacheDtype ? (
-              <div className="space-y-3">
-                <FieldLabel label="KV cache dtype" />
-                <SelectField
-                  onChange={(value) =>
-                    updateField("kvCacheDtype", value as EstimateInput["kvCacheDtype"])
-                  }
-                  options={kvCacheDtypeFieldOptions}
-                  value={formState.kvCacheDtype}
-                />
-              </div>
-            ) : null}
-
-            <div className="space-y-3">
-              <FieldLabel label="Checkpoint profile" />
-              {hasCompatibleProfiles && selectedInferenceProfile ? (
-                <SelectField
-                  disabled={Boolean(selectedModel.fixedDtype)}
-                  onChange={handleInferenceProfileChange}
-                  options={inferenceProfileOptions}
-                  value={selectedInferenceProfile.id}
-                />
-              ) : (
-                <div
-                  className={`${fieldClassName} cursor-not-allowed text-[var(--muted)] opacity-70`}
-                >
-                  No compatible profile in v1
-                </div>
-              )}
             </div>
 
             <p className="text-sm leading-6 text-[var(--muted)] md:col-span-2">
@@ -261,10 +368,7 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
             ) : null}
 
             {hasCompatibleProfiles && selectedInferenceProfile ? (
-              <p className="text-[0.82rem] leading-5 text-[var(--muted)] md:col-span-2 xl:col-span-4">
-                {selectedInferenceProfile.official ? "Official" : "Proxy"} profile:{" "}
-                {selectedInferenceProfile.label}. {selectedInferenceProfile.note}
-              </p>
+              null
             ) : (
               <p className="rounded-[1.35rem] bg-[var(--danger-soft)] px-4 py-3 text-sm leading-6 text-[var(--danger)] md:col-span-2 xl:col-span-4">
                 {selectedModel.displayName} does not have a compatible checkpoint profile
@@ -285,19 +389,6 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
               </div>
             ) : null}
 
-            <div className="space-y-3">
-              <FieldLabel label="GPU" />
-              <SelectField
-                onChange={(value) => updateField("gpuId", value)}
-                options={gpuFieldOptions}
-                value={formState.gpuId}
-              />
-              {formState.gpuId === "custom" ? (
-                <p className="text-sm leading-6 text-[var(--muted)]">
-                  Enter the custom VRAM value in Advanced options below.
-                </p>
-              ) : null}
-            </div>
           </div>
 
           {showsAdvancedOptions ? (
@@ -332,6 +423,39 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                 <div className="grid gap-5 pt-5 md:grid-cols-2">
                   {showsServingControls ? (
                     <div className="space-y-3">
+                      <FieldLabel label="Checkpoint profile" />
+                      {hasCompatibleProfiles && selectedInferenceProfile ? (
+                        <SelectField
+                          disabled={Boolean(selectedModel.fixedDtype)}
+                          onChange={handleInferenceProfileChange}
+                          options={inferenceProfileOptions}
+                          value={selectedInferenceProfile.id}
+                        />
+                      ) : (
+                        <div
+                          className={`${fieldClassName} cursor-not-allowed text-[var(--muted)] opacity-70`}
+                        >
+                          No compatible profile in v1
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {showsKvCacheDtype ? (
+                    <div className="space-y-3">
+                      <FieldLabel label="KV cache dtype" />
+                      <SelectField
+                        onChange={(value) =>
+                          updateField("kvCacheDtype", value as EstimateInput["kvCacheDtype"])
+                        }
+                        options={kvCacheDtypeFieldOptions}
+                        value={formState.kvCacheDtype}
+                      />
+                    </div>
+                  ) : null}
+
+                  {showsServingControls ? (
+                    <div className="space-y-3">
                       <FieldLabel label="Context length" />
                       <input
                         className={fieldClassName}
@@ -358,6 +482,40 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                         step={1}
                         type="number"
                         value={formState.batchSize}
+                      />
+                    </div>
+                  ) : null}
+
+                  {formState.runtimeId === "vllm" ? (
+                    <div className="space-y-3">
+                      <FieldLabel label="GPU count" />
+                      <input
+                        className={fieldClassName}
+                        max={72}
+                        min={1}
+                        onChange={(event) =>
+                          handleNumberChange("gpuCount", event.target.value)
+                        }
+                        step={1}
+                        type="number"
+                        value={formState.gpuCount}
+                      />
+                    </div>
+                  ) : null}
+
+                  {formState.runtimeId === "vllm" ? (
+                    <div className="space-y-3">
+                      <FieldLabel label="GPU memory utilization" />
+                      <input
+                        className={fieldClassName}
+                        max={0.99}
+                        min={0.5}
+                        onChange={(event) =>
+                          handleNumberChange("vllmGpuUtilization", event.target.value)
+                        }
+                        step={0.01}
+                        type="number"
+                        value={formState.vllmGpuUtilization}
                       />
                     </div>
                   ) : null}
@@ -394,10 +552,8 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
               Calculate VRAM
             </button>
             <p className="text-sm leading-6 text-[var(--muted)]">
-              Quick mental model: Transformers stays a fixed single-request
-              baseline, while vLLM exposes serving context and concurrency.
-              Runtime presets still change the required card VRAM, and FP8 KV
-              cache cuts the KV term roughly in half versus BF16.
+              vLLM estimates use the selected GPU memory utilization. Transformers
+              stays a fixed 4K single-request baseline.
             </p>
           </div>
         </form>
@@ -463,7 +619,7 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                   </h2>
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--muted)]">
                     Core estimate: {formatGb(result.totalBytes)}.{" "}
-                    Against {result.gpu.displayName}, this leaves{" "}
+                    Against {formatGpuSelection(result)}, this leaves{" "}
                     {result.fits
                       ? `${formatGb(result.headroomBytes)} of headroom.`
                       : `${formatGb(result.deficitBytes)} of deficit.`}
@@ -477,12 +633,23 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     </p>
                   ) : null}
                   <div className="mt-4 flex flex-wrap gap-3">
-                    <Link
-                      className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
-                      href={getModelNotesHref(result.input)}
-                    >
-                      About model
-                    </Link>
+                    {isRegistryModel(result.model) ? (
+                      <Link
+                        className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
+                        href={getModelNotesHref(result.input)}
+                      >
+                        About model
+                      </Link>
+                    ) : (
+                      <a
+                        className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
+                        href={result.model.sourceUrl}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        Open on Hugging Face
+                      </a>
+                    )}
                   </div>
                 </div>
               </div>
@@ -497,6 +664,18 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     value={result.gpu.displayName}
                   />
                   <DetailRow label="Runtime" value={result.runtime.label} />
+                  {result.input.runtimeId === "vllm" ? (
+                    <DetailRow
+                      label="GPU utilization"
+                      value={result.input.vllmGpuUtilization.toString()}
+                    />
+                  ) : null}
+                  {result.input.runtimeId === "vllm" ? (
+                    <DetailRow
+                      label="GPU count"
+                      value={formatInteger(result.input.gpuCount)}
+                    />
+                  ) : null}
                   {result.input.runtimeId === "transformers" ? (
                     <DetailRow label="Serving mode" value="Single request baseline" />
                   ) : null}
@@ -533,6 +712,12 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     label="Nominal VRAM"
                     value={`${result.gpu.vramGb.toFixed(0)} GB`}
                   />
+                  {result.input.gpuCount > 1 ? (
+                    <DetailRow
+                      label="Aggregate VRAM"
+                      value={formatGb(result.gpuBytes)}
+                    />
+                  ) : null}
                   <DetailRow
                     label="Core estimate"
                     value={formatGb(result.totalBytes)}
@@ -547,6 +732,45 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                   />
                 </div>
               </div>
+            </div>
+          </section>
+
+          <section className={cardClassName}>
+            <SectionTitle eyebrow="GPU compare" title="What fits this setup" />
+            <div className="mt-5 overflow-hidden rounded-[1.6rem] border border-[var(--line)] bg-white/55">
+              <div className="grid grid-cols-[minmax(9rem,1.2fr)_0.6fr_0.7fr_0.7fr] gap-3 border-b border-[var(--line)] px-4 py-3 text-[0.72rem] mono text-[var(--muted)]">
+                <span>GPU</span>
+                <span>Status</span>
+                <span>Headroom</span>
+                <span>Max conc.</span>
+              </div>
+              {getGpuComparisonResults(result).map((comparison) => (
+                <div
+                  className="grid grid-cols-[minmax(9rem,1.2fr)_0.6fr_0.7fr_0.7fr] gap-3 border-b border-[var(--line)] px-4 py-3 text-sm last:border-b-0"
+                  key={comparison.gpu.id}
+                >
+                  <span className="text-[var(--ink)]">
+                    {comparison.result.input.gpuCount > 1
+                      ? `${formatInteger(comparison.result.input.gpuCount)} × ${comparison.gpu.displayName}`
+                      : comparison.gpu.displayName}
+                  </span>
+                  <span
+                    className={comparison.result.fits ? "text-[var(--success)]" : "text-[var(--danger)]"}
+                  >
+                    {comparison.result.fits ? "Fits" : "OOM"}
+                  </span>
+                  <span className="text-[var(--muted)]">
+                    {comparison.result.fits
+                      ? formatGb(comparison.result.headroomBytes)
+                      : `-${formatGb(comparison.result.deficitBytes)}`}
+                  </span>
+                  <span className="text-[var(--muted)]">
+                    {comparison.result.maxConcurrencyAtContext === undefined
+                      ? "-"
+                      : formatInteger(comparison.result.maxConcurrencyAtContext)}
+                  </span>
+                </div>
+              ))}
             </div>
           </section>
 
@@ -591,7 +815,6 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
               ) : (
                 <p>Training adds activations, gradients, and optimizer memory on top of resident weights.</p>
               )}
-              <p>Hybrid Qwen3.5 layers also keep a static linear-attention state, and runtime presets can inflate the required card VRAM beyond the core estimate.</p>
             </div>
 
             <details className="mt-4 rounded-[1.6rem] border border-[var(--line)] bg-white/55 p-4">
@@ -622,20 +845,6 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
           </section>
 
           <section className={cardClassName}>
-            <SectionTitle eyebrow="Tips" title="What to change next" />
-            <div className="mt-5 space-y-3">
-              {result.tips.map((tip) => (
-                <p
-                  key={tip}
-                  className="rounded-[1.35rem] bg-white/62 px-4 py-3 text-sm leading-6 text-[var(--muted)]"
-                >
-                  {tip}
-                </p>
-              ))}
-            </div>
-          </section>
-
-          <section className={cardClassName}>
             <SectionTitle eyebrow="Model" title="Selected model" />
             <div className="mt-5 rounded-[1.75rem] bg-white/55 p-6 md:p-7">
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -645,12 +854,23 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     {formatModelAtGlance(result.model)}
                   </p>
                 </div>
-                <Link
-                  className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
-                  href={getModelNotesHref(result.input)}
-                >
-                  About model
-                </Link>
+                {isRegistryModel(result.model) ? (
+                  <Link
+                    className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
+                    href={getModelNotesHref(result.input)}
+                  >
+                    About model
+                  </Link>
+                ) : (
+                  <a
+                    className="inline-flex rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition hover:border-[var(--line-strong)]"
+                    href={result.model.sourceUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Open on Hugging Face
+                  </a>
+                )}
               </div>
               <ModelSpecGrid className="mt-6" model={result.model} />
               <div className="mt-5 flex flex-wrap gap-3">
@@ -672,18 +892,7 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
           </section>
 
           <div className="px-2 pt-1 text-sm leading-7 text-[var(--muted)]">
-            <p className="eyebrow text-[0.68rem] text-[var(--muted)]">
-              Assumptions
-            </p>
-            <div className="mt-3 space-y-2">
-              <p>
-                The calculator works in raw bytes, displays decimal GB, and keeps
-                both the core tensor footprint and the runtime-adjusted card
-                requirement explicit instead of pretending every engine uses the
-                full card the same way.
-              </p>
-            </div>
-            <div className="mt-5 border-t border-[var(--line)] pt-4 text-center text-sm leading-6 text-[var(--ink)]">
+            <div className="border-t border-[var(--line)] pt-4 text-center text-sm leading-6 text-[var(--ink)]">
               <a
                 className="underline decoration-[var(--line-strong)] underline-offset-4 transition hover:text-[var(--accent)]"
                 href="https://buymeacoffee.com/kishanvavdara"
@@ -942,4 +1151,69 @@ function cx(...parts: Array<string | false | null | undefined>) {
 
 function getModelNotesHref(input: EstimateInput) {
   return `/models/${input.modelId}?${serializeEstimateInput(input).toString()}`;
+}
+
+function applyConstraintsForModel(input: EstimateInput, model?: ModelSpec): EstimateInput {
+  if (!model || isRegistryModel(model)) {
+    return applyModelConstraints(input);
+  }
+
+  const profile =
+    getCompatibleInferenceProfile(
+      model,
+      input.runtimeId,
+      input.inferenceProfileId,
+      input.dtype,
+    ) ?? model.inferenceProfiles[0];
+
+  return {
+    ...input,
+    mode: "inference" as const,
+    contextLength: input.runtimeId === "transformers" ? 4096 : input.contextLength,
+    batchSize: input.runtimeId === "transformers" ? 1 : input.batchSize,
+    gpuCount: input.runtimeId === "transformers" ? 1 : input.gpuCount,
+    kvCacheDtype: runtimeSupportsKvCacheDtype(input.runtimeId)
+      ? input.kvCacheDtype
+      : "bf16" as const,
+    dtype: profile?.effectiveDtype ?? input.dtype,
+    inferenceProfileId: profile?.id ?? "",
+  };
+}
+
+function getGpuComparisonResults(result: EstimateResult) {
+  return gpus
+    .filter((gpu) => gpu.id !== "custom")
+    .map((gpu) => ({
+      gpu,
+      result: estimateVramForModel(
+        {
+          ...result.input,
+          gpuId: gpu.id,
+        },
+        result.model,
+      ),
+    }))
+    .sort((left, right) => {
+      if (left.result.fits !== right.result.fits) {
+        return left.result.fits ? -1 : 1;
+      }
+
+      if (left.result.fits) {
+        return right.result.headroomBytes - left.result.headroomBytes;
+      }
+
+      return left.result.deficitBytes - right.result.deficitBytes;
+    });
+}
+
+function formatGpuSelection(result: EstimateResult) {
+  if (result.input.gpuCount <= 1) {
+    return result.gpu.displayName;
+  }
+
+  return `${formatInteger(result.input.gpuCount)} × ${result.gpu.displayName}`;
+}
+
+function isRegistryModel(model: ModelSpec) {
+  return models.some((entry) => entry.id === model.id);
 }

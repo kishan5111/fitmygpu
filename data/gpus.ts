@@ -58,6 +58,20 @@ export const gpus: GpuSpec[] = [
     classType: "Datacenter",
   },
   {
+    id: "b200-180gb",
+    displayName: "B200 180GB",
+    vramGb: 180,
+    memoryBandwidthGbps: 8000,
+    classType: "Datacenter",
+  },
+  {
+    id: "gb200-nvl72-186gb",
+    displayName: "GB200 NVL72 GPU 186GB",
+    vramGb: 186,
+    memoryBandwidthGbps: 8000,
+    classType: "Datacenter",
+  },
+  {
     id: "l40-48gb",
     displayName: "L40 48GB",
     vramGb: 48,

@@ -9,10 +9,14 @@ function bytesFromCheckpointGiB(checkpointGiB: number, totalParams: number) {
   return (checkpointGiB * 1024 * 1024 * 1024) / totalParams;
 }
 
-function directProfile(profile: Omit<InferenceProfile, "official" | "weightMode">): InferenceProfile {
+function directProfile(
+  profile: Omit<InferenceProfile, "official" | "weightMode" | "confidence"> &
+    Partial<Pick<InferenceProfile, "confidence">>,
+): InferenceProfile {
   return {
     ...profile,
     official: true,
+    confidence: profile.confidence ?? "verified",
     weightMode: "direct",
   };
 }

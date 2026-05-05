@@ -9,10 +9,12 @@ function buildInput(overrides: Partial<EstimateInput> = {}): EstimateInput {
     trainingType: "sft",
     runtimeId: "transformers",
     kvCacheDtype: "bf16",
+    vllmGpuUtilization: 0.9,
     modelId: "llama-3.1-8b",
     dtype: "fp16",
     inferenceProfileId: "",
     gpuId: "rtx-4090-24gb",
+    gpuCount: 1,
     customVramGb: 24,
     contextLength: 4096,
     batchSize: 1,
@@ -64,6 +66,7 @@ describe("estimateVram", () => {
 
     expect(result.input.contextLength).toBe(4096);
     expect(result.input.batchSize).toBe(1);
+    expect(result.input.gpuCount).toBe(1);
     expect(result.maxConcurrencyAtContext).toBeUndefined();
     expect(result.runtimeNotes.join(" ")).toMatch(/single-request baseline|4K context/i);
   });
@@ -159,6 +162,56 @@ describe("estimateVram", () => {
     expect(transformersResult.fits).toBe(true);
     expect(vllmResult.fits).toBe(false);
     expect(vllmResult.runtimeNotes.join(" ")).toMatch(/0.9|90%/i);
+  });
+
+  it("uses the selected vllm gpu memory utilization", () => {
+    const defaultBudget = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "qwen-2.5-7b",
+      }),
+    );
+    const largerBudget = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "qwen-2.5-7b",
+        vllmGpuUtilization: 0.95,
+      }),
+    );
+
+    expect(defaultBudget.requiredGpuBytes).toBeCloseTo(defaultBudget.totalBytes / 0.9, -1);
+    expect(largerBudget.requiredGpuBytes).toBeCloseTo(largerBudget.totalBytes / 0.95, -1);
+    expect(largerBudget.requiredGpuBytes).toBeLessThan(defaultBudget.requiredGpuBytes);
+    expect(largerBudget.fitMetricLabel).toContain("0.95");
+  });
+
+  it("uses aggregate capacity for multi-gpu vllm fits", () => {
+    const singleGpu = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "gpt-oss-120b",
+        gpuId: "rtx-4090-24gb",
+        contextLength: 8192,
+        batchSize: 1,
+      }),
+    );
+    const fourGpu = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "gpt-oss-120b",
+        gpuId: "rtx-4090-24gb",
+        gpuCount: 4,
+        contextLength: 8192,
+        batchSize: 1,
+      }),
+    );
+
+    expect(fourGpu.totalBytes).toBe(singleGpu.totalBytes);
+    expect(fourGpu.requiredGpuBytes).toBe(singleGpu.requiredGpuBytes);
+    expect(fourGpu.gpuBytes).toBe(singleGpu.gpuBytes * 4);
+    expect(singleGpu.fits).toBe(false);
+    expect(fourGpu.fits).toBe(true);
+    expect(fourGpu.runtimeNotes.join(" ")).toMatch(/aggregate tensor-parallel/i);
   });
 
   it("treats nominal GPU VRAM labels as binary frame-buffer sizes", () => {

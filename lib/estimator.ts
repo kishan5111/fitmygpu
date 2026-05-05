@@ -22,7 +22,6 @@ import { normalizeEstimateInput } from "@/lib/query-state";
 import {
   getRuntimeSpec,
   runtimeSupportsKvCacheDtype,
-  VLLM_GPU_UTILIZATION,
 } from "@/lib/runtime";
 import type {
   BreakdownItem,
@@ -35,7 +34,6 @@ import type {
   KvCacheDtype,
   MathLine,
   ModelSpec,
-  RuntimeId,
   TrainingType,
 } from "@/lib/types";
 
@@ -68,6 +66,23 @@ type Strategy =
 export function estimateVram(input: EstimateInput): EstimateResult {
   const normalized = applyModelConstraints(normalizeEstimateInput(input));
   const model = getModelSpec(normalized.modelId);
+
+  return estimateResolvedModelVram(normalized, model);
+}
+
+export function estimateVramForModel(
+  input: EstimateInput,
+  model: ModelSpec,
+): EstimateResult {
+  const normalized = normalizeInputForModel(normalizeEstimateInput(input), model);
+
+  return estimateResolvedModelVram(normalized, model);
+}
+
+function estimateResolvedModelVram(
+  normalized: EstimateInput,
+  model: ModelSpec,
+): EstimateResult {
   const gpu = getGpu(normalized.gpuId, normalized.customVramGb);
   const warnings: string[] = [];
   const notes: string[] = [];
@@ -226,6 +241,30 @@ export function estimateVram(input: EstimateInput): EstimateResult {
       strategy,
     ),
   );
+}
+
+function normalizeInputForModel(input: EstimateInput, model: ModelSpec): EstimateInput {
+  const nextDtype = model.fixedDtype ?? input.dtype;
+  const nextInferenceProfile = getCompatibleInferenceProfile(
+    model,
+    input.runtimeId,
+    input.inferenceProfileId,
+    nextDtype,
+  );
+
+  return {
+    ...input,
+    mode: "inference",
+    contextLength:
+      input.runtimeId === "transformers" ? 4096 : input.contextLength,
+    batchSize: input.runtimeId === "transformers" ? 1 : input.batchSize,
+    gpuCount: input.runtimeId === "transformers" ? 1 : input.gpuCount,
+    kvCacheDtype: runtimeSupportsKvCacheDtype(input.runtimeId)
+      ? input.kvCacheDtype
+      : "bf16",
+    dtype: nextInferenceProfile ? nextInferenceProfile.effectiveDtype : nextDtype,
+    inferenceProfileId: nextInferenceProfile?.id ?? "",
+  };
 }
 
 function buildInferenceEstimate(
@@ -647,14 +686,13 @@ function finalizeResult(
     | "notes"
     | "runtime"
     | "runtimeNotes"
-    | "tips"
     | "effectiveContextLength"
   >,
 ): EstimateResult {
-  const gpuBytes = getGpuCapacityBytes(gpu);
+  const gpuBytes = getGpuCapacityBytes(gpu, input.gpuCount);
   const runtime = getRuntimeSpec(input.runtimeId);
-  const runtimeNotes = buildRuntimeNotes(runtime.id);
-  const { requiredGpuBytes, fitMetricLabel } = resolveRequiredGpuBytes(runtime.id, partial);
+  const runtimeNotes = buildRuntimeNotes(input);
+  const { requiredGpuBytes, fitMetricLabel } = resolveRequiredGpuBytes(input, partial);
   const fits = requiredGpuBytes <= gpuBytes;
   const headroomBytes = fits ? gpuBytes - requiredGpuBytes : 0;
   const deficitBytes = fits ? 0 : requiredGpuBytes - gpuBytes;
@@ -674,81 +712,8 @@ function finalizeResult(
     fitMetricLabel,
     warnings,
     notes,
-    tips: generateTips({
-      model,
-      gpu,
-      input,
-      totalBytes: partial.totalBytes,
-      headroomBytes,
-      deficitBytes,
-      fits,
-      activationsBytes: partial.activationsBytes,
-      kvCacheBytes: partial.kvCacheBytes,
-    }),
     effectiveContextLength,
   };
-}
-
-function generateTips(args: {
-  model: ModelSpec;
-  gpu: GpuSpec;
-  input: EstimateInput;
-  totalBytes: number;
-  headroomBytes: number;
-  deficitBytes: number;
-  fits: boolean;
-  activationsBytes: number;
-  kvCacheBytes: number;
-}): string[] {
-  const tips: string[] = [];
-
-  if (!args.fits && args.input.dtype !== "int4") {
-    tips.push("Try 4-bit weights to cut the resident model footprint before touching anything else.");
-  }
-
-  if (!args.fits && args.input.contextLength > 2048 && args.kvCacheBytes > 0) {
-    if (args.input.runtimeId !== "transformers") {
-    tips.push("Reduce context length if KV cache is the fastest-growing term in the estimate.");
-    }
-  }
-
-  if (!args.fits && args.input.batchSize > 1) {
-    if (args.input.runtimeId !== "transformers") {
-      tips.push("Lower concurrent requests to shrink KV cache and runtime memory linearly.");
-    }
-  }
-
-  if (
-    args.input.mode === "training" &&
-    args.input.trainingType === "sft" &&
-    !args.fits
-  ) {
-    tips.push("Use LoRA or QLoRA instead of full SFT if you want a realistic path onto a single card.");
-  }
-
-  if (args.input.mode === "training" && !args.input.gradientCheckpointing) {
-    tips.push("Enable gradient checkpointing to roughly halve the activation factor in this estimator.");
-  }
-
-  if (args.input.mode === "training" && !args.input.sequencePacking) {
-    tips.push("Sequence packing is a good next lever when activations dominate the training footprint.");
-  }
-
-  if (args.fits && args.headroomBytes < 2 * DECIMAL_GB) {
-    tips.push("This technically fits, but the headroom is thin. Leave extra space for kernels and runtime buffers.");
-  }
-
-  if (args.input.trainingType === "grpo") {
-    tips.push("GRPO memory is highly rollout-dependent; fewer completions or shorter rollouts can swing the result sharply.");
-  }
-
-  if (tips.length === 0) {
-    tips.push(
-      `Keep some spare VRAM on ${args.gpu.displayName} for runtime overhead instead of targeting a zero-margin fit.`,
-    );
-  }
-
-  return Array.from(new Set(tips)).slice(0, 4);
 }
 
 function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
@@ -965,8 +930,8 @@ function getGpu(gpuId: string, customVramGb: number): GpuSpec {
   };
 }
 
-function getGpuCapacityBytes(gpu: GpuSpec): number {
-  return gpu.vramGb * BINARY_GIB;
+function getGpuCapacityBytes(gpu: GpuSpec, gpuCount = 1): number {
+  return gpu.vramGb * BINARY_GIB * gpuCount;
 }
 
 export function canEstimateInput(input: EstimateInput): boolean {
@@ -978,7 +943,7 @@ export function canEstimateInput(input: EstimateInput): boolean {
 }
 
 function resolveRequiredGpuBytes(
-  runtimeId: RuntimeId,
+  input: EstimateInput,
   partial: Pick<
     EstimateResult,
     | "weightsBytes"
@@ -993,10 +958,12 @@ function resolveRequiredGpuBytes(
     | "grpoExtraBytes"
   >,
 ) {
-  if (runtimeId === "vllm") {
+  if (input.runtimeId === "vllm") {
     return {
-      requiredGpuBytes: partial.totalBytes / VLLM_GPU_UTILIZATION,
-      fitMetricLabel: "Required GPU VRAM (0.9 budget)",
+      requiredGpuBytes: partial.totalBytes / input.vllmGpuUtilization,
+      fitMetricLabel: `Required GPU VRAM (${formatUtilization(
+        input.vllmGpuUtilization,
+      )} budget)`,
     };
   }
 
@@ -1013,10 +980,10 @@ function estimateMaxConcurrencyAtContext(
   effectiveContextLength: number,
   strategy: Extract<Strategy, { mode: "inference" }>,
 ): number {
-  const gpuBytes = getGpuCapacityBytes(gpu);
+  const gpuBytes = getGpuCapacityBytes(gpu, input.gpuCount);
   const requiredForBatchSize = (batchSize: number) =>
     resolveRequiredGpuBytes(
-      input.runtimeId,
+      input,
       buildInferenceEstimate(
         { ...input, batchSize },
         model,
@@ -1055,20 +1022,31 @@ function estimateMaxConcurrencyAtContext(
   return low;
 }
 
-function buildRuntimeNotes(runtimeId: RuntimeId): string[] {
-  switch (runtimeId) {
+function buildRuntimeNotes(input: EstimateInput): string[] {
+  switch (input.runtimeId) {
     case "transformers":
       return [
         "Transformers is treated as a single-request baseline in v1, so the calculator fixes it to 4K context and one active sequence instead of exposing serving controls.",
       ];
     case "vllm":
       return [
-        "vLLM converts the core estimate into nominal card VRAM by dividing by the default --gpu-memory-utilization=0.9 executor budget.",
+        `vLLM converts the core estimate into nominal card VRAM by dividing by --gpu-memory-utilization=${formatUtilization(
+          input.vllmGpuUtilization,
+        )}.`,
         "vLLM also supports a lower-precision KV cache path; this calculator models BF16 and FP8 cache storage explicitly.",
         "The app also derives a max concurrent-sequence estimate at the selected context length.",
         "That concurrency estimate assumes all active sequences are simultaneously resident at the selected full context, which is more conservative than scheduler caps like --max-num-seqs or per-iteration token limits.",
+        ...(input.gpuCount > 1
+          ? [
+              "Multi-GPU estimates treat the selected cards as aggregate tensor-parallel GPU memory. The calculator does not verify interconnect topology, tensor parallel support, or per-layer placement.",
+            ]
+          : []),
       ];
   }
+}
+
+function formatUtilization(value: number) {
+  return value.toFixed(2).replace(/0$/, "");
 }
 
 function getKvCacheLayerCount(model: ModelSpec): number {

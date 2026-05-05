@@ -5,7 +5,7 @@ import { DetailRow } from "@/components/detail-row";
 import { ModelSpecGrid } from "@/components/model-spec-grid";
 import { models } from "@/data/models";
 import { canEstimateInput, estimateVram } from "@/lib/estimator";
-import { formatDtype } from "@/lib/format";
+import { formatDtype, formatGb, formatInteger } from "@/lib/format";
 import {
   applyModelConstraints,
   getCompatibleInferenceProfile,
@@ -13,6 +13,7 @@ import {
 import {
   formatModelAtGlance,
   getInferenceProfileRuntimeLabels,
+  getProfileConfidenceLabel,
   isMultimodalModel,
 } from "@/lib/model-display";
 import { runtimeSupportsKvCacheDtype } from "@/lib/runtime";
@@ -155,6 +156,19 @@ export default async function ModelNotesPage({ params, searchParams }: PageProps
             <div className="rounded-[1.6rem] bg-white/62 p-5">
               <div className="space-y-3">
                 <DetailRow label="Runtime" value={contextResult.runtime.label} />
+                <DetailRow label="GPU" value={contextResult.gpu.displayName} />
+                {contextResult.input.gpuCount > 1 ? (
+                  <DetailRow
+                    label="GPU count"
+                    value={formatInteger(contextResult.input.gpuCount)}
+                  />
+                ) : null}
+                {contextResult.input.gpuCount > 1 ? (
+                  <DetailRow
+                    label="Aggregate VRAM"
+                    value={formatGb(contextResult.gpuBytes)}
+                  />
+                ) : null}
                 <DetailRow
                   label="Checkpoint profile"
                   value={contextResult.calculationProfile}
@@ -227,6 +241,9 @@ export default async function ModelNotesPage({ params, searchParams }: PageProps
                       Current
                     </span>
                   ) : null}
+                  <span className="inline-flex rounded-full border border-[var(--line)] px-3 py-1 text-[0.72rem] mono text-[var(--muted)]">
+                    {getProfileConfidenceLabel(profile)}
+                  </span>
                 </div>
                 <p className="mt-4 text-sm leading-7 text-[var(--ink)]">{profile.note}</p>
                 <div className="mt-4 flex flex-wrap gap-2">

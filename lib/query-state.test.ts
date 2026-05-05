@@ -7,6 +7,8 @@ describe("query state", () => {
       ...DEFAULT_INPUT,
       runtimeId: "vllm",
       kvCacheDtype: "fp8",
+      vllmGpuUtilization: 0.95,
+      gpuCount: 4,
       modelId: "qwen-3.5-4b",
       inferenceProfileId: "official-bf16",
       dtype: "bf16",
@@ -14,11 +16,15 @@ describe("query state", () => {
 
     expect(params.get("rt")).toBe("vllm");
     expect(params.get("kvd")).toBe("fp8");
+    expect(params.get("vutil")).toBe("0.95");
+    expect(params.get("ngpu")).toBe("4");
 
     const parsed = parseSearchParams(params);
 
     expect(parsed.runtimeId).toBe("vllm");
     expect(parsed.kvCacheDtype).toBe("fp8");
+    expect(parsed.vllmGpuUtilization).toBe(0.95);
+    expect(parsed.gpuCount).toBe(4);
     expect(parsed.modelId).toBe("qwen-3.5-4b");
     expect(parsed.inferenceProfileId).toBe("official-bf16");
   });

@@ -1,6 +1,6 @@
 import { formatInteger, formatParamCount } from "@/lib/format";
 import { ALL_RUNTIMES, getRuntimeSpec } from "@/lib/runtime";
-import type { InferenceProfile, ModelSpec } from "@/lib/types";
+import type { InferenceProfile, ModelSpec, ProfileConfidence } from "@/lib/types";
 
 export function formatModelAtGlance(model: ModelSpec) {
   const kvHeads = model.numKvHeads ?? model.numAttentionHeads;
@@ -30,6 +30,25 @@ export function getInferenceProfileRuntimeLabels(profile: InferenceProfile) {
   return (profile.supportedRuntimes ?? ALL_RUNTIMES).map(
     (runtimeId) => getRuntimeSpec(runtimeId).label,
   );
+}
+
+export function getProfileConfidence(profile: InferenceProfile): ProfileConfidence {
+  if (profile.confidence) {
+    return profile.confidence;
+  }
+
+  return profile.official ? "verified" : "proxy";
+}
+
+export function getProfileConfidenceLabel(profile: InferenceProfile) {
+  switch (getProfileConfidence(profile)) {
+    case "verified":
+      return "Verified";
+    case "estimated":
+      return "Estimated";
+    case "proxy":
+      return "Proxy";
+  }
 }
 
 export function isMultimodalModel(model: ModelSpec) {

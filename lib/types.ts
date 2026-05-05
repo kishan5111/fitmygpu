@@ -10,6 +10,8 @@ export type KvCacheDtype = "bf16" | "fp8";
 
 export type Modality = "text" | "multimodal";
 
+export type ProfileConfidence = "verified" | "estimated" | "proxy";
+
 export type CacheStrategy =
   | "standard_gqa"
   | "hybrid_attention"
@@ -25,6 +27,7 @@ export interface InferenceProfile {
   label: string;
   effectiveDtype: Dtype;
   official: boolean;
+  confidence?: ProfileConfidence;
   note: string;
   sourceUrl: string;
   weightMode: "direct" | "calibrated";
@@ -86,10 +89,12 @@ export interface EstimateInput {
   trainingType: TrainingType;
   runtimeId: RuntimeId;
   kvCacheDtype: KvCacheDtype;
+  vllmGpuUtilization: number;
   modelId: string;
   dtype: Dtype;
   inferenceProfileId: string;
   gpuId: string;
+  gpuCount: number;
   customVramGb: number;
   contextLength: number;
   batchSize: number;
@@ -146,7 +151,6 @@ export interface EstimateResult {
   math: MathLine[];
   warnings: string[];
   notes: string[];
-  tips: string[];
   effectiveContextLength: number;
   maxConcurrencyAtContext?: number;
   effectiveDtype: Dtype;

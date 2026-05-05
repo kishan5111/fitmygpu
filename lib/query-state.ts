@@ -58,10 +58,15 @@ export function parseSearchParams(searchParams: SearchParamsLike): EstimateInput
   const trainingType = read("train");
   const runtimeId = read("rt");
   const kvCacheDtype = read("kvd");
+  const vllmGpuUtilization = parseNumber(
+    read("vutil"),
+    DEFAULT_INPUT.vllmGpuUtilization,
+  );
   const dtype = read("dtype");
   const inferenceProfileId = read("profile");
   const modelId = read("model");
   const gpuId = read("gpu");
+  const gpuCount = parseNumber(read("ngpu"), DEFAULT_INPUT.gpuCount);
   const customVramGb = parseNumber(read("vram"), DEFAULT_INPUT.customVramGb);
   const contextLength = parseNumber(read("ctx"), DEFAULT_INPUT.contextLength);
   const batchSize = parseNumber(read("batch"), DEFAULT_INPUT.batchSize);
@@ -77,10 +82,12 @@ export function parseSearchParams(searchParams: SearchParamsLike): EstimateInput
     kvCacheDtype: kvCacheDtypeValues.has(kvCacheDtype as KvCacheDtype)
       ? (kvCacheDtype as KvCacheDtype)
       : DEFAULT_KV_CACHE_DTYPE,
+    vllmGpuUtilization,
     dtype: dtypeValues.has(dtype as Dtype) ? (dtype as Dtype) : DEFAULT_INPUT.dtype,
     inferenceProfileId: inferenceProfileId ?? "",
     modelId: modelIds.has(modelId ?? "") ? (modelId as string) : DEFAULT_INPUT.modelId,
     gpuId: gpuIds.has(gpuId ?? "") ? (gpuId as string) : DEFAULT_INPUT.gpuId,
+    gpuCount,
     customVramGb,
     contextLength,
     batchSize,
@@ -92,9 +99,34 @@ export function parseSearchParams(searchParams: SearchParamsLike): EstimateInput
 export function normalizeEstimateInput(input: EstimateInput): EstimateInput {
   return {
     ...input,
-    contextLength: clampInteger(input.contextLength, 256, 256_000),
-    batchSize: clampInteger(input.batchSize, 1, 64),
-    customVramGb: clampFloat(input.customVramGb, 1, 512),
+    contextLength: clampInteger(
+      fallbackNumber(input.contextLength, DEFAULT_INPUT.contextLength),
+      256,
+      256_000,
+    ),
+    batchSize: clampInteger(
+      fallbackNumber(input.batchSize, DEFAULT_INPUT.batchSize),
+      1,
+      64,
+    ),
+    gpuCount: clampInteger(
+      fallbackNumber(input.gpuCount, DEFAULT_INPUT.gpuCount),
+      1,
+      72,
+    ),
+    customVramGb: clampFloat(
+      fallbackNumber(input.customVramGb, DEFAULT_INPUT.customVramGb),
+      1,
+      512,
+    ),
+    vllmGpuUtilization: clampFloat(
+      fallbackNumber(
+        input.vllmGpuUtilization,
+        DEFAULT_INPUT.vllmGpuUtilization,
+      ),
+      0.5,
+      0.99,
+    ),
   };
 }
 
@@ -104,10 +136,15 @@ export function serializeEstimateInput(input: EstimateInput): URLSearchParams {
   params.set("mode", normalized.mode);
   params.set("rt", normalized.runtimeId);
   params.set("kvd", normalized.kvCacheDtype);
+  params.set(
+    "vutil",
+    normalized.vllmGpuUtilization.toFixed(2).replace(/0$/, ""),
+  );
   params.set("model", normalized.modelId);
   params.set("dtype", normalized.dtype);
   params.set("profile", normalized.inferenceProfileId);
   params.set("gpu", normalized.gpuId);
+  params.set("ngpu", normalized.gpuCount.toString());
   params.set("vram", normalized.customVramGb.toString());
   params.set("ctx", normalized.contextLength.toString());
   params.set("batch", normalized.batchSize.toString());
@@ -146,6 +183,10 @@ function parseNumber(value: string | undefined, fallback: number): number {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function fallbackNumber(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function clampInteger(value: number, min: number, max: number): number {

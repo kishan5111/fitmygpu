@@ -42,16 +42,19 @@ export const dtypeOptions: Array<{ value: Dtype; label: string }> = [
 
 export const defaultRuntimeId: RuntimeId = "vllm";
 export const DEFAULT_KV_CACHE_DTYPE: KvCacheDtype = "bf16";
+export const DEFAULT_VLLM_GPU_UTILIZATION = 0.9;
 
 export const DEFAULT_INPUT: EstimateInput = {
   mode: "inference",
   trainingType: "sft",
   runtimeId: defaultRuntimeId,
   kvCacheDtype: DEFAULT_KV_CACHE_DTYPE,
+  vllmGpuUtilization: DEFAULT_VLLM_GPU_UTILIZATION,
   modelId: models[0].id,
   dtype: "fp16",
   inferenceProfileId: models[0].inferenceProfiles[0]?.id ?? "",
   gpuId: gpus[1].id,
+  gpuCount: 1,
   customVramGb: 24,
   contextLength: TRANSFORMERS_BASELINE_CONTEXT_LENGTH,
   batchSize: 1,
