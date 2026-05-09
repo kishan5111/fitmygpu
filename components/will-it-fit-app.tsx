@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DetailRow } from "@/components/detail-row";
+import { HomeExplore } from "@/components/home-explore";
 import { ModelSpecGrid } from "@/components/model-spec-grid";
 import { gpus } from "@/data/gpus";
 import { models } from "@/data/models";
@@ -276,8 +277,9 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-[74rem] flex-col gap-8 px-4 py-8 sm:px-6 lg:px-10 lg:py-10">
-      <section className={cardClassName}>
+    <>
+      <main className="mx-auto flex min-h-screen max-w-[74rem] flex-col gap-8 px-4 py-8 sm:px-6 lg:px-10 lg:py-10">
+        <section className={cardClassName}>
         <div className="mb-8 flex flex-col gap-4">
           <div className="max-w-3xl space-y-3">
             <h1 className="hero-title text-4xl leading-none text-[var(--ink)] md:text-[4.2rem]">
@@ -559,8 +561,8 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
         </form>
       </section>
 
-      {result ? (
-        <div className="space-y-4" ref={resultsRef}>
+        {result ? (
+          <div className="space-y-4" ref={resultsRef}>
           {result.warnings.length > 0 ? (
             <section className={`${cardClassName} border-[rgba(154,79,67,0.18)]`}>
               <SectionTitle
@@ -903,9 +905,11 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
               </a>
             </div>
           </div>
-        </div>
-      ) : null}
-    </main>
+          </div>
+        ) : null}
+      </main>
+      {result ? null : <HomeExplore />}
+    </>
   );
 }
 

@@ -19,7 +19,5 @@ export default async function Page({ searchParams }: PageProps) {
       : null
     : null;
 
-  return (
-    <WillItFitApp initialInput={initialInput} initialResult={initialResult} />
-  );
+  return <WillItFitApp initialInput={initialInput} initialResult={initialResult} />;
 }

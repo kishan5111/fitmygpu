@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
 import { Analytics } from "@vercel/analytics/next";
+import { SiteNav } from "@/components/site-nav";
 import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://fitmygpu.com"),
-  title: "Will It Fit? | FitMyGPU",
+  title: "FitMyGPU | VRAM Calculator, Model Notes, and Inference Updates",
   description:
-    "Estimate single-GPU text inference VRAM across Transformers and vLLM.",
+    "VRAM calculator for text inference plus concise model pages and runtime updates.",
   alternates: {
     canonical: "/",
   },
@@ -29,6 +30,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
+        <SiteNav />
         {children}
         <Analytics />
       </body>

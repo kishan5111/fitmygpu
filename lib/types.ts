@@ -43,6 +43,7 @@ export interface ModelSpec {
   displayName: string;
   family: string;
   organization: string;
+  companyId?: string;
   architectureType: string;
   isMoe: boolean;
   totalParams: number;
@@ -74,6 +75,30 @@ export interface ModelSpec {
   inferenceProfiles: InferenceProfile[];
   fixedDtype?: Dtype;
   supportedModes?: Mode[];
+}
+
+export interface CompanySpec {
+  id: string;
+  name: string;
+  shortDescription: string;
+}
+
+export type BlogContentBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "heading"; text: string }
+  | { type: "list"; items: string[] }
+  | { type: "code"; language: string; code: string }
+  | { type: "svg"; variant: "vram-breakdown" };
+
+export interface BlogPost {
+  slug: string;
+  title: string;
+  summary: string;
+  publishedAt: string;
+  category: "model-release" | "runtime-update" | "architecture-note" | "calculator-update";
+  companyIds: string[];
+  modelIds?: string[];
+  content: BlogContentBlock[];
 }
 
 export interface GpuSpec {
