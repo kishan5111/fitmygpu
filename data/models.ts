@@ -9,6 +9,10 @@ function bytesFromCheckpointGiB(checkpointGiB: number, totalParams: number) {
   return (checkpointGiB * 1024 * 1024 * 1024) / totalParams;
 }
 
+function bytesFromCheckpointBytes(checkpointBytes: number, totalParams: number) {
+  return checkpointBytes / totalParams;
+}
+
 function directProfile(
   profile: Omit<InferenceProfile, "official" | "weightMode" | "confidence"> &
     Partial<Pick<InferenceProfile, "confidence">>,
@@ -43,23 +47,23 @@ const qwen35OverviewPoints = (attentionLayers: number, totalLayers: number) => [
 const qwen35ResearchHighlights = [
   point(
     "Unified vision-language foundation",
-    "The family is trained as one multimodal base, which is why the text-only serving estimate still keeps resident vision-side weights in memory.",
+    "The family is trained as one multimodal base rather than as separate text and vision branches bolted together late, which is why text-only serving still keeps the resident vision-side weights on card.",
   ),
   point(
     "Efficient hybrid architecture",
-    "Gated DeltaNet layers carry sequence state while periodic gated-attention layers handle KV-heavy reasoning, reducing cache pressure compared with a dense attention-only stack.",
+    "Gated DeltaNet layers carry sequence state while periodic gated-attention layers handle KV-heavy reasoning, so the stack aims for long-context throughput without paying dense-attention KV cost on every layer.",
   ),
   point(
-    "Scaled post-training",
-    "Qwen describes reinforcement-learning and large-agent-environment scaling as a core part of the family, not just a small instruction-tuning pass.",
+    "Scalable RL generalization",
+    "Qwen frames reinforcement learning and large agent-environment scaling as core to the family, with training aimed at more robust adaptation across reasoning, coding, and agent workflows.",
   ),
   point(
     "Global coverage",
-    "The family targets broad multilingual support, which matters for deployment quality but also implies a larger unified vocabulary and general-purpose serving footprint.",
+    "The release emphasizes support for 201 languages and dialects, which matters for deployment quality and reinforces that the family is meant as a broad general-purpose foundation.",
   ),
   point(
     "Training infrastructure",
-    "The release emphasizes high multimodal training efficiency and asynchronous RL infrastructure, signaling that the architecture is designed for scale rather than as a small multimodal add-on.",
+    "The release emphasizes near-text-only multimodal training efficiency and asynchronous RL infrastructure, signaling that the stack was built to scale rather than as a small multimodal add-on.",
   ),
 ];
 
@@ -67,6 +71,146 @@ const qwen35MemoryBehaviorPoints = (attentionLayers: number, totalLayers: number
   `This text-only estimate still keeps the resident multimodal checkpoint weights on card, so the floor is higher than a pure language-only artifact of similar active size.`,
   `Only ${attentionLayers} of ${totalLayers} layers carry a standard KV cache. The remaining layers contribute a fixed sequence-state term instead, which makes long-context growth less aggressive than a dense full-attention stack.`,
   "Longer context and higher concurrency still increase memory monotonically, but more of the footprint shifts into mixed KV-plus-state behavior instead of pure transformer cache expansion.",
+];
+
+const gptOssResearchHighlights = (experts: number, activeParams: string) => [
+  point(
+    "Open reasoning and agents",
+    "OpenAI frames GPT-OSS as an open-weight reasoning and agent model rather than as a plain chat checkpoint, with tool use and controllable reasoning effort as first-class product features.",
+  ),
+  point(
+    "Sparse MoE backbone",
+    `Each MoE block uses ${experts} experts with routed activation while the active path stays near ${activeParams} per token, so capability scales faster than per-token compute.`,
+  ),
+  point(
+    "Mixed-weight release format",
+    "The published checkpoint keeps most routed expert weights in MXFP4 while shared weights remain in BF16, which is the main deployment change versus a conventional dense BF16 export.",
+  ),
+  point(
+    "Long-context attention recipe",
+    "The stack alternates full and sliding-window attention so the model can target long reasoning traces without paying full-context KV cost on every layer.",
+  ),
+];
+
+const llama31ResearchHighlights = (sizeLabel: string) => [
+  point(
+    "128K context family",
+    `Llama 3.1 extends Meta's general-purpose open model line to a native 128K context window, which is the main deployment-facing change over earlier shorter-context Llama releases.`,
+  ),
+  point(
+    "Multilingual instruction tuning",
+    "Meta emphasizes broader multilingual coverage and stronger instruction-following across the release, not just a raw parameter bump.",
+  ),
+  point(
+    "Tool-capable release",
+    `The ${sizeLabel} checkpoint is positioned as tool-usable and production-oriented, so the release focus is practical agent and assistant behavior rather than a novel architecture change.`,
+  ),
+  point(
+    "Grouped-query attention",
+    "Grouped-query attention remains the key inference-side design choice because it preserves long-context serving practicality without a full multi-head KV burden.",
+  ),
+];
+
+const qwen25ResearchHighlights = (sizeLabel: string) => [
+  point(
+    "Qwen2.5 capability upgrade",
+    `Qwen presents the ${sizeLabel} model as part of a broader Qwen2.5 upgrade around stronger coding, math, instruction-following, and structured output behavior over Qwen2.`,
+  ),
+  point(
+    "128K long-context release",
+    "The family is explicitly pushed as a long-context line with a native 128K window, making long-document and extended-generation quality a core part of the release rather than an add-on.",
+  ),
+  point(
+    "Broader multilingual scope",
+    "Qwen highlights broader multilingual and domain coverage, reinforcing that the line is meant as a general-purpose foundation rather than a narrow English-only coding model.",
+  ),
+  point(
+    "Dense architecture, better post-training",
+    "The product story is not sparse routing or exotic attention; it is a stronger dense transformer plus better data, post-training, and deployment packaging.",
+  ),
+];
+
+const nemotronResearchHighlights = (sizeLabel: string) => [
+  point(
+    "Reasoning-first post-training",
+    `NVIDIA positions the ${sizeLabel} Nemotron model around stronger math, code, and science reasoning rather than around a new base architecture.`,
+  ),
+  point(
+    "Qwen2.5-derived backbone",
+    "The family stays close to a Qwen2.5 dense grouped-query backbone, so the main change is in post-training behavior and benchmark profile, not in memory geometry.",
+  ),
+  point(
+    "GenSelect heavy mode",
+    "The model card explicitly introduces a heavier multi-sample inference path through GenSelect, which matters because capability can scale at inference time without changing the resident model itself.",
+  ),
+  point(
+    "Benchmark-led release framing",
+    "NVIDIA markets the line primarily through reasoning benchmark results in its size class, so this is a capability-tuned release more than an architecture-tuned one.",
+  ),
+];
+
+const gemma2ResearchHighlights = (sizeLabel: string) => [
+  point(
+    "Compact open model line",
+    `Google positions Gemma 2 ${sizeLabel} as part of a lightweight open family derived from Gemini-era research, aimed at getting strong dense-model quality from smaller deployment footprints.`,
+  ),
+  point(
+    "Efficiency over frontier scale",
+    "The release emphasis is efficient open deployment and good quality-per-parameter, not sparse routing, multimodal fusion, or ultra-long-context serving.",
+  ),
+  point(
+    "Instruction-tuned product focus",
+    "The instruction variants are framed as practical developer models, so the story is real deployment usability rather than experimental architecture novelty.",
+  ),
+];
+
+const mistralNemoResearchHighlights = [
+  point(
+    "Mistral-NVIDIA joint release",
+    "Mistral Nemo is presented as a joint Mistral-NVIDIA model rather than as a routine checkpoint refresh, which is part of why the launch emphasized deployment practicality.",
+  ),
+  point(
+    "128K context and new tokenizer",
+    "The release highlights a native 128K context window and the Tekken tokenizer, both of which materially affect how the model is positioned for long-form and multilingual use.",
+  ),
+  point(
+    "Data mix upgrade",
+    "Mistral describes the model as trained with more multilingual and code-oriented data, so the upgrade story is as much about training mix as about architecture.",
+  ),
+  point(
+    "Deployment-friendly packaging",
+    "The family is explicitly pitched as a strong dense long-context model that still fits realistic single-node inference workflows, especially once lower-precision checkpoints are used.",
+  ),
+];
+
+const mixtralResearchHighlights = [
+  point(
+    "Sparse top-2 expert routing",
+    "Mixtral's core research change is sparse MoE routing: only a small subset of experts is active per token even though a much larger parameter pool stays resident.",
+  ),
+  point(
+    "Dense-quality alternative path",
+    "The release matters because it offered a practical open sparse model path at a time when most comparable open checkpoints were still fully dense.",
+  ),
+  point(
+    "Compute and capacity decoupling",
+    "Mixtral is important less because of a new attention design and more because it separates total parameter capacity from per-token compute in a way that users can feel operationally.",
+  ),
+];
+
+const phi4ResearchHighlights = [
+  point(
+    "Reasoning-per-parameter focus",
+    "Microsoft positions Phi-4 around unusually strong reasoning and coding quality for its size, so the release story is capability density rather than frontier-scale parameters.",
+  ),
+  point(
+    "Synthetic and curated data mix",
+    "The model card emphasizes the training recipe itself, especially high-quality synthetic and curated data for math, code, instruction following, and commonsense tasks.",
+  ),
+  point(
+    "Straightforward dense deployment",
+    "Phi-4 does not introduce sparse routing or hybrid attention; the practical angle is that it stays a normal dense deployment target while aiming for stronger reasoning than many peers in its class.",
+  ),
 ];
 
 export const models: ModelSpec[] = [
@@ -95,7 +239,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Smaller GPT-OSS reasoning checkpoint with a routed MoE stack, 128K context, and a relatively light active path.",
     researchHighlight:
-      "Each MoE block has 32 experts with top-4 routing, and the stack alternates full and sliding-window attention to keep long-context reasoning practical.",
+      "OpenAI positions GPT-OSS as an open-weight reasoning and agent model: Harmony-format reasoning, tool use, and MXFP4 post-training on the MoE weights are the headline changes that make the 20B model practical on smaller hardware.",
+    researchHighlights: gptOssResearchHighlights(32, "3.6B params"),
     memoryNote:
       "More than 90% of GPT-OSS 20B's parameters sit in MoE weights quantized to MXFP4, while the remaining shared weights stay in BF16.",
     inferenceProfiles: [
@@ -134,7 +279,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Largest GPT-OSS checkpoint in the current registry, built for higher-capacity open reasoning with a much larger resident expert pool.",
     researchHighlight:
-      "Each MoE block has 128 experts with top-4 routing, and the larger model keeps the alternating full and sliding-window attention recipe while staying near 5.1B active params per token.",
+      "The 120B release is framed as the production GPT-OSS model: configurable reasoning effort, native agent features, and MXFP4-quantized MoE weights are the main product-level changes that let it target single-80GB deployment.",
+    researchHighlights: gptOssResearchHighlights(128, "5.1B params"),
     memoryNote:
       "More than 90% of GPT-OSS 120B's parameters sit in MXFP4-quantized MoE weights, while the remaining shared weights stay in BF16.",
     inferenceProfiles: [
@@ -167,7 +313,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Compact dense Llama model with grouped-query attention and a 128K context window.",
     researchHighlight:
-      "Grouped-query attention keeps KV state lighter than full multi-head attention while retaining a long native context window.",
+      "Meta’s Llama 3.1 release centers on multilingual instruction tuning, 128K context, and built-in tool-use support while keeping grouped-query attention as the main inference-scaling choice across the family.",
+    researchHighlights: llama31ResearchHighlights("8B"),
     memoryNote:
       "Dense weights dominate the footprint; grouped KV heads help prevent cache growth from exploding at long context.",
     inferenceProfiles: [
@@ -200,7 +347,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "High-capacity dense Llama model that is common in serious long-context inference and fine-tuning work.",
     researchHighlight:
-      "Large dense transformer with grouped-query attention and a long 128K context design.",
+      "The 70B Llama 3.1 checkpoint extends the same 128K multilingual, tool-capable recipe to a much larger dense model, with grouped-query attention kept specifically for long-context inference scalability.",
+    researchHighlights: llama31ResearchHighlights("70B"),
     memoryNote:
       "Most of the VRAM goes into resident dense weights, so quantization is the key lever for single-GPU inference.",
     inferenceProfiles: [
@@ -233,7 +381,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Small-to-mid-sized Qwen model with long context support and efficient grouped KV heads.",
     researchHighlight:
-      "Long-context Qwen architecture with grouped KV heads to keep inference memory manageable.",
+      "Qwen2.5’s official release emphasizes stronger coding, math, structured output, and long-text behavior over Qwen2, with 128K context and broader multilingual coverage as the main product-level changes.",
+    researchHighlights: qwen25ResearchHighlights("7B"),
     memoryNote:
       "This is still a dense model, so resident weights set the floor; the compact KV layout mainly helps as context grows.",
     inferenceProfiles: [
@@ -282,7 +431,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Mid-sized Qwen model with strong long-context behavior and a practical fit for 24 to 80 GB cards.",
     researchHighlight:
-      "Scaled Qwen long-context stack with grouped attention and strong dense-model generality.",
+      "The 14B Qwen2.5 release carries the same Qwen2.5 upgrades at a more capable size: stronger instruction following, better structured outputs, 128K context, and wider multilingual support.",
+    researchHighlights: qwen25ResearchHighlights("14B"),
     memoryNote:
       "The jump from 7B to 14B is mostly resident weight memory; KV cache remains relatively controlled thanks to grouped KV heads.",
     inferenceProfiles: [
@@ -331,7 +481,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Larger dense Qwen variant that often pushes single-GPU inference toward aggressive quantization.",
     researchHighlight:
-      "High-capacity dense Qwen checkpoint optimized for long-context inference rather than sparse routing.",
+      "At 32B, Qwen2.5 is positioned as the larger dense version of the same family improvements: stronger knowledge, coding and math, more stable long generations, and a native 128K context recipe.",
+    researchHighlights: qwen25ResearchHighlights("32B"),
     memoryNote:
       "Dense resident weights dominate here, which is why 4-bit loading is usually the difference between fitting and not fitting on one card.",
     inferenceProfiles: [
@@ -390,7 +541,7 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Compact Qwen3.5 checkpoint with a hybrid text-plus-vision stack and a small resident footprint for text-only local experimentation.",
     researchHighlight:
-      "Qwen3.5 alternates gated DeltaNet blocks with gated attention, so only a subset of layers carry a full KV cache during text generation.",
+      "Qwen3.5 combines a unified vision-language foundation with a hybrid DeltaNet-plus-attention layout, so the architecture story is about multimodal parity and lower long-context serving cost rather than a plain dense upgrade.",
     memoryNote:
       "This text-only estimate still counts the resident multimodal checkpoint weights; only media-token-specific memory is excluded in v1.",
     overviewPoints: qwen35OverviewPoints(6, 24),
@@ -401,10 +552,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(1_746_882_752, 900_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-0.8B-Base",
-        note: "Qwen ships Qwen3.5-0.8B in Hugging Face Transformers format with documented Transformers and vLLM usage.",
+        note: "The official Qwen3.5-0.8B safetensor weights total about 1.75 GB on Hugging Face, and Qwen documents Transformers and vLLM usage for the release.",
       }),
     ],
   },
@@ -437,7 +588,7 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Small hybrid Qwen3.5 release for developers who want longer context and native multimodal training heritage without a large single-card footprint.",
     researchHighlight:
-      "The 2B variant keeps the same 6 attention-bearing layers as the 0.8B model, which materially reduces KV growth compared with a full-attention stack.",
+      "The 2B Qwen3.5 model keeps the family’s unified multimodal training and hybrid DeltaNet-attention recipe, so the main change versus Qwen2.5 is the architecture and training setup rather than just parameter count.",
     memoryNote:
       "Resident weights still include the multimodal components, but the hybrid stack keeps text-generation cache growth noticeably lower than a dense full-attention design.",
     overviewPoints: qwen35OverviewPoints(6, 24),
@@ -448,10 +599,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(4_548_144_832, 2_000_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-2B",
-        note: "Qwen documents Qwen3.5-2B in Hugging Face Transformers format with official Transformers and vLLM serving guidance.",
+        note: "The official Qwen3.5-2B safetensor weights total about 4.55 GB on Hugging Face, and Qwen documents both Transformers and vLLM serving paths.",
       }),
     ],
   },
@@ -484,7 +635,7 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Mid-sized Qwen3.5 checkpoint with a larger resident multimodal footprint but still practical for careful single-GPU text-only serving.",
     researchHighlight:
-      "The 4B language model sits inside a roughly 5B resident multimodal artifact and uses only 8 gated-attention layers for KV-heavy generation.",
+      "The 4B Qwen3.5 release is where the family’s hybrid design starts to matter more operationally: multimodal training stays unified, but only a subset of layers pay full KV-cache cost during generation.",
     memoryNote:
       "The hybrid layout keeps cache growth lower than dense 32-layer models, but the extra multimodal resident weights raise the single-card floor.",
     overviewPoints: qwen35OverviewPoints(8, 32),
@@ -495,10 +646,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(4_659_865_088, 5_000_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-4B",
-        note: "Qwen publishes Qwen3.5-4B in Hugging Face Transformers format with explicit Transformers and vLLM guidance, including a text-only serving mode in vLLM.",
+        note: "The official Qwen3.5-4B safetensor weights total about 4.66 GB on Hugging Face, and Qwen documents explicit Transformers and vLLM guidance, including text-only serving in vLLM.",
       }),
     ],
   },
@@ -531,7 +682,7 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Largest practical Qwen3.5 release for this batch, pairing a 9B language model with a resident multimodal stack that still targets single-GPU text serving.",
     researchHighlight:
-      "The hybrid layout keeps only 8 of 32 layers in the gated-attention path, which materially changes KV-cache behavior versus a dense long-context model.",
+      "Qwen’s own release frames the 9B model around five changes: unified multimodal training, hybrid DeltaNet-attention inference, scaled RL, broader language coverage, and a training stack built for multimodal efficiency.",
     memoryNote:
       "This estimate intentionally keeps the full multimodal checkpoint resident even for text-only use, so it is conservative relative to runtime-specific language-only shortcuts.",
     overviewPoints: qwen35OverviewPoints(8, 32),
@@ -542,10 +693,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(9_653_104_368, 10_000_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/Qwen/Qwen3.5-9B",
-        note: "Qwen documents Qwen3.5-9B for Transformers and vLLM.",
+        note: "The official Qwen3.5-9B safetensor weights total about 9.65 GB on Hugging Face, and Qwen documents both Transformers and vLLM support.",
       }),
     ],
   },
@@ -568,7 +719,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Small dense Nemotron reasoning model built on the Qwen2.5 1.5B geometry, aimed at strong math and code behavior on modest hardware.",
     researchHighlight:
-      "NVIDIA post-trains the Qwen2.5 1.5B base for reasoning while keeping the dense grouped-query architecture intact, so the memory geometry stays predictable.",
+      "NVIDIA presents OpenReasoning-Nemotron as a reasoning-tuned derivative of Qwen2.5 with strong math, code, and science performance, plus an explicit GenSelect heavy-inference path for combining multiple sampled solutions.",
+    researchHighlights: nemotronResearchHighlights("1.5B"),
     memoryNote:
       "This behaves like a classic dense Qwen2.5-style checkpoint where resident weights dominate and KV cache follows the standard grouped-attention path.",
     inferenceProfiles: [
@@ -576,10 +728,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(3_087_467_144, 1_540_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-1.5B",
-        note: "NVIDIA ships OpenReasoning-Nemotron-1.5B in Hugging Face Transformers format, and v1 models it as a standard dense Qwen2.5-derived checkpoint across the supported runtimes.",
+        note: "The official OpenReasoning-Nemotron-1.5B safetensor weights total about 3.09 GB on Hugging Face, and NVIDIA ships it as a dense Qwen2.5-derived Transformers checkpoint.",
       }),
     ],
   },
@@ -602,7 +754,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Reasoning-tuned dense Nemotron checkpoint that tracks the familiar Qwen2.5 7B memory shape while targeting stronger math and code performance.",
     researchHighlight:
-      "OpenReasoning-Nemotron-7B is post-trained for deliberate reasoning but keeps the dense grouped-query Qwen2.5 backbone, so fit behavior remains straightforward.",
+      "The 7B Nemotron release is positioned around benchmark-leading size-class reasoning results and optional GenSelect-style test-time scaling, while leaving the underlying Qwen2.5 memory geometry mostly unchanged.",
+    researchHighlights: nemotronResearchHighlights("7B"),
     memoryNote:
       "Resident weights set the floor, and the grouped KV layout keeps long-context cache growth moderate relative to older full-head dense models.",
     inferenceProfiles: [
@@ -610,10 +763,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(15_231_233_024, 7_610_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-7B",
-        note: "NVIDIA publishes OpenReasoning-Nemotron-7B as a Hugging Face Transformers checkpoint derived from Qwen2.5-7B, so v1 models it with the same dense grouped-query memory geometry.",
+        note: "The official OpenReasoning-Nemotron-7B safetensor weights total about 15.23 GB on Hugging Face, and NVIDIA publishes it as a Qwen2.5-7B-derived dense Transformers checkpoint.",
       }),
     ],
   },
@@ -636,7 +789,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Mid-sized dense Nemotron checkpoint for users who want stronger reasoning behavior than 7B without stepping straight into 32B deployment territory.",
     researchHighlight:
-      "The reasoning post-training is layered on top of the Qwen2.5 14B architecture, so the model keeps its dense long-context grouped-attention profile.",
+      "NVIDIA highlights the 14B model as one of the strongest models in its size class for reasoning benchmarks, with the main product change being post-training for long-form math, code, and science reasoning rather than a new backbone.",
+    researchHighlights: nemotronResearchHighlights("14B"),
     memoryNote:
       "This is still a dense 14B-class checkpoint: weights dominate the fit decision, and context length becomes the next major lever after quantization.",
     inferenceProfiles: [
@@ -644,10 +798,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(29_540_067_328, 14_700_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-14B",
-        note: "NVIDIA publishes OpenReasoning-Nemotron-14B as a Transformers-format dense derivative of Qwen2.5-14B, and v1 models it accordingly across the runtime presets.",
+        note: "The official OpenReasoning-Nemotron-14B safetensor weights total about 29.54 GB on Hugging Face, and NVIDIA publishes it as a Qwen2.5-14B-derived dense Transformers checkpoint.",
       }),
     ],
   },
@@ -670,7 +824,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Largest Nemotron checkpoint in this batch, intended as a serious reasoning model that still follows a plain dense Qwen2.5-style memory profile.",
     researchHighlight:
-      "The 32B reasoning model keeps the dense grouped-query Qwen2.5 32B backbone, which makes the VRAM story much easier to reason about than a sparse frontier model.",
+      "The 32B Nemotron model is the largest reasoning-tuned release in this family and is explicitly paired with GenSelect-style heavy inference, but it still rides on a dense Qwen2.5 backbone rather than introducing sparse routing.",
+    researchHighlights: nemotronResearchHighlights("32B"),
     memoryNote:
       "Dense resident weights dominate immediately, so single-GPU deployment quickly becomes a quantization-and-runtime-budget problem rather than a cache problem.",
     inferenceProfiles: [
@@ -678,10 +833,10 @@ export const models: ModelSpec[] = [
         id: "official-bf16",
         label: "Official BF16 checkpoint",
         effectiveDtype: "bf16",
-        weightBytes: 2,
+        weightBytes: bytesFromCheckpointBytes(65_527_752_704, 32_500_000_000),
         supportedRuntimes: ALL_RUNTIMES,
         sourceUrl: "https://huggingface.co/nvidia/OpenReasoning-Nemotron-32B",
-        note: "NVIDIA publishes OpenReasoning-Nemotron-32B as a dense Qwen2.5-32B derivative in Hugging Face Transformers format, and v1 models it with the same grouped-query cache geometry.",
+        note: "The official OpenReasoning-Nemotron-32B safetensor weights total about 65.53 GB on Hugging Face, and NVIDIA publishes it as a dense Qwen2.5-32B-derived Transformers checkpoint.",
       }),
     ],
   },
@@ -704,7 +859,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Instruction-tuned Gemma checkpoint with a relatively short native context window and efficient KV usage.",
     researchHighlight:
-      "Gemma 2 focuses on efficient dense inference rather than extreme context length.",
+      "Gemma 2’s release emphasizes strong capability from comparatively compact dense models derived from Gemini-era research, with the family aimed at efficient open deployment rather than extreme context length.",
+    researchHighlights: gemma2ResearchHighlights("9B"),
     memoryNote:
       "The shorter native context window keeps KV cache moderate, so the main memory driver is still the dense weight tensor.",
     inferenceProfiles: [
@@ -737,7 +893,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Larger Gemma model that trades a shorter native context window for more capacity per token.",
     researchHighlight:
-      "Scaled Gemma dense architecture with more capacity per token than the 9B variant.",
+      "The 27B Gemma 2 model scales the same Gemma 2 recipe upward, prioritizing more capability per token within Google’s lightweight-open-model line instead of chasing sparse or ultra-long-context design.",
+    researchHighlights: gemma2ResearchHighlights("27B"),
     memoryNote:
       "Because the context window is shorter, most VRAM pressure comes from resident weights rather than cache growth.",
     inferenceProfiles: [
@@ -770,7 +927,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Long-context dense Mistral checkpoint that remains practical on a single 24 GB card with quantization.",
     researchHighlight:
-      "Long-context dense Mistral design tuned for efficient single-node inference.",
+      "Mistral Nemo is described as a 12B joint Mistral-NVIDIA release with 128K context, more multilingual and code-heavy training data, a new Tekken tokenizer, and a drop-in-replacement positioning versus Mistral 7B.",
+    researchHighlights: mistralNemoResearchHighlights,
     memoryNote:
       "Dense weights set the baseline footprint; long-context use makes KV cache the next thing to watch after quantization.",
     inferenceProfiles: [
@@ -812,7 +970,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Sparse MoE model where runtime compute is closer to one expert pair, but VRAM still pays for resident weights.",
     researchHighlight:
-      "Sparse expert routing keeps per-token compute closer to active experts than to total parameters.",
+      "Mixtral’s main change versus dense peers is sparse top-2 expert routing: the model behaves like a much smaller active network per token while still exposing a much larger total parameter pool for quality.",
+    researchHighlights: mixtralResearchHighlights,
     memoryNote:
       "Even though only a subset of experts is active per token, single-GPU VRAM still carries the resident experts in memory.",
     inferenceProfiles: [
@@ -845,7 +1004,8 @@ export const models: ModelSpec[] = [
     shortDescription:
       "Reasoning-oriented dense Phi model with moderate context length and a straightforward single-GPU footprint.",
     researchHighlight:
-      "Reasoning-focused dense architecture aimed at strong capability per parameter rather than sparse routing.",
+      "Microsoft positions Phi-4 around high-quality synthetic and curated training data for math, coding, commonsense, and instruction-following, with the main story being unusually strong reasoning per parameter rather than a novel deployment architecture.",
+    researchHighlights: phi4ResearchHighlights,
     memoryNote:
       "With a moderate context window, the model behaves like a classic dense checkpoint where weights dominate and cache stays secondary.",
     inferenceProfiles: [

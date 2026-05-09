@@ -36,6 +36,7 @@ export interface InferenceProfile {
   targetBatchSize?: number;
   targetContextLength?: number;
   supportedRuntimes?: RuntimeId[];
+  loadDtypeMode?: "profile_only" | "estimate_from_load_dtype";
 }
 
 export interface ModelSpec {

@@ -7,7 +7,6 @@ import { ModelSpecGrid } from "@/components/model-spec-grid";
 import { models } from "@/data/models";
 import { formatInteger } from "@/lib/format";
 import {
-  formatModelAtGlance,
   isMultimodalModel,
 } from "@/lib/model-display";
 import {
@@ -65,35 +64,34 @@ export default async function ModelPage({ params }: PageProps) {
             <p className="max-w-3xl text-base leading-7 text-[var(--muted)] md:text-lg">
               {model.shortDescription}
             </p>
-            <p className="text-sm leading-6 text-[var(--muted)]">
-              {formatModelAtGlance(model)}
-            </p>
           </div>
         </div>
       </section>
 
       <section className="space-y-6">
-        <Card eyebrow="Overview and architecture" title="What this model is and what changes memory">
-          <div className="space-y-3">
-            <DetailRow label="Company" value={company?.name ?? model.organization} />
-            <DetailRow label="Family" value={model.family} />
-            <DetailRow label="License" value={model.license} />
-            <DetailRow
-              label="Modality"
-              value={isMultimodalModel(model) ? "Multimodal, estimated in text-only mode" : "Text"}
-            />
-            <DetailRow
-              label="Context window"
-              value={formatInteger(model.contextLength)}
-            />
+        <Card eyebrow="Overview and architecture" title="What it is">
+          <div className="rounded-[1.6rem] bg-white/58 p-5">
+            <div className="grid gap-x-10 gap-y-4 md:grid-cols-2">
+              <DetailRow label="Company" value={company?.name ?? model.organization} />
+              <DetailRow label="Family" value={model.family} />
+              <DetailRow label="Architecture" value={model.architectureType} />
+              <DetailRow label="License" value={model.license} />
+              <DetailRow
+                label="Modality"
+                value={isMultimodalModel(model) ? "Multimodal (text-only estimate)" : "Text"}
+              />
+              <DetailRow
+                label="Context window"
+                value={formatInteger(model.contextLength)}
+              />
+            </div>
+            <div className="mt-5 border-t border-[var(--line)] pt-5">
+              <ModelSpecGrid model={model} />
+            </div>
           </div>
-          <p className="mt-5">{model.architectureType}</p>
           {model.overviewPoints?.length ? (
             <InsightList className="mt-5" points={model.overviewPoints} />
           ) : null}
-          <div className="mt-5 rounded-[1.6rem] bg-white/58 p-5">
-            <ModelSpecGrid model={model} />
-          </div>
         </Card>
 
         <Card eyebrow="Research highlight" title="Why it matters">

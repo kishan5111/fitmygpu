@@ -25,6 +25,7 @@ import { estimateVram, estimateVramForModel } from "@/lib/estimator";
 import type { HfImportResult } from "@/lib/hf-import";
 import {
   applyModelConstraints,
+  getAllowedLoadDtypes,
   getCompatibleInferenceProfile,
   getCompatibleInferenceProfiles,
   getInferenceProfileSourceUrl,
@@ -39,6 +40,7 @@ import {
   runtimeSupportsKvCacheDtype,
 } from "@/lib/runtime";
 import { normalizeEstimateInput, serializeEstimateInput } from "@/lib/query-state";
+import { dtypeOptions } from "@/lib/constants";
 import type {
   EstimateInput,
   EstimateResult,
@@ -113,6 +115,11 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
     label: profile.label,
     value: profile.id,
   }));
+  const loadDtypeOptions = selectedInferenceProfile
+    ? dtypeOptions
+        .filter((option) => getAllowedLoadDtypes(selectedInferenceProfile).includes(option.value))
+        .map((option) => ({ label: option.label, value: option.value }))
+    : [];
   const gpuFieldOptions = gpus.map((gpu) => ({
     label: gpu.displayName,
     value: gpu.id,
@@ -165,7 +172,6 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
       applyConstraintsForModel(
         {
           ...current,
-          dtype: profile.effectiveDtype,
           inferenceProfileId: profile.id,
         },
         selectedModel,
@@ -443,6 +449,19 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     </div>
                   ) : null}
 
+                  {showsServingControls && selectedInferenceProfile ? (
+                    <div className="space-y-3">
+                      <FieldLabel label="Load dtype" />
+                      <SelectField
+                        onChange={(value) =>
+                          updateField("dtype", value as EstimateInput["dtype"])
+                        }
+                        options={loadDtypeOptions}
+                        value={formState.dtype}
+                      />
+                    </div>
+                  ) : null}
+
                   {showsKvCacheDtype ? (
                     <div className="space-y-3">
                       <FieldLabel label="KV cache dtype" />
@@ -666,6 +685,12 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
                     value={result.gpu.displayName}
                   />
                   <DetailRow label="Runtime" value={result.runtime.label} />
+                  {result.input.runtimeId !== "transformers" ? (
+                    <DetailRow
+                      label="Load dtype"
+                      value={formatDtype(result.effectiveDtype)}
+                    />
+                  ) : null}
                   {result.input.runtimeId === "vllm" ? (
                     <DetailRow
                       label="GPU utilization"
@@ -1179,7 +1204,10 @@ function applyConstraintsForModel(input: EstimateInput, model?: ModelSpec): Esti
     kvCacheDtype: runtimeSupportsKvCacheDtype(input.runtimeId)
       ? input.kvCacheDtype
       : "bf16" as const,
-    dtype: profile?.effectiveDtype ?? input.dtype,
+    dtype:
+      profile && getAllowedLoadDtypes(profile).includes(input.dtype)
+        ? input.dtype
+        : profile?.effectiveDtype ?? input.dtype,
     inferenceProfileId: profile?.id ?? "",
   };
 }

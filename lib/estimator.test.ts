@@ -125,16 +125,54 @@ describe("estimateVram", () => {
     expect(gptOss120B.weightsBytes / 1_000_000_000).toBeLessThan(80);
   });
 
-  it("warns when a GPT-OSS inference run is treated as a requantized proxy", () => {
-    const proxy = estimateVram(
+  it("falls back to the shipped GPT-OSS checkpoint instead of inventing a proxy", () => {
+    const result = estimateVram(
       buildInput({
         modelId: "gpt-oss-20b",
         dtype: "int4",
       }),
     );
 
-    expect(proxy.calculationProfile).toBe("Proxy 4-bit estimate");
-    expect(proxy.warnings.join(" ")).toMatch(/proxy estimate|official/i);
+    expect(result.calculationProfile).toBe("Mixed MXFP4 + BF16 checkpoint");
+    expect(result.effectiveDtype).toBe("bf16");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("lets a standard float checkpoint use an alternate load dtype estimate", () => {
+    const bf16 = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "qwen-2.5-7b",
+        dtype: "bf16",
+      }),
+    );
+    const int4 = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "qwen-2.5-7b",
+        inferenceProfileId: "official-bf16",
+        dtype: "int4",
+      }),
+    );
+
+    expect(int4.effectiveDtype).toBe("int4");
+    expect(int4.calculationProfile).toContain("loaded as 4-bit");
+    expect(int4.weightsBytes).toBeLessThan(bf16.weightsBytes);
+    expect(int4.notes.join(" ")).toMatch(/load dtype|resident weight memory/i);
+  });
+
+  it("keeps mixed official checkpoints pinned to their published artifact dtype behavior", () => {
+    const result = estimateVram(
+      buildInput({
+        runtimeId: "vllm",
+        modelId: "gpt-oss-120b",
+        dtype: "int4",
+      }),
+    );
+
+    expect(result.calculationProfile).toBe("Mixed MXFP4 + BF16 checkpoint");
+    expect(result.effectiveDtype).toBe("bf16");
+    expect(result.weightsBytes / 1_000_000_000).toBeCloseTo(65.3, 1);
   });
 
   it("uses a reduced executor budget for vllm", () => {
@@ -308,6 +346,8 @@ describe("estimateVram", () => {
   it("treats multimodal checkpoints as text-only estimates while keeping resident weights", () => {
     const qwen = models.find((model) => model.id === "qwen-3.5-9b");
     expect(qwen).toBeDefined();
+    const officialProfile = qwen!.inferenceProfiles.find((profile) => profile.id === "official-bf16");
+    expect(officialProfile).toBeDefined();
 
     const result = estimateVram(
       buildInput({
@@ -317,7 +357,9 @@ describe("estimateVram", () => {
     );
 
     expect(result.model.modality).toBe("multimodal");
-    expect(result.weightsBytes).toBe(qwen!.totalParams * 2);
+    expect(result.weightsBytes).toBe(
+      qwen!.totalParams * (officialProfile?.weightBytes ?? 0),
+    );
     expect(result.linearStateBytes).toBeGreaterThan(0);
     expect(result.notes.join(" ")).toMatch(/text-only|vision|projector/i);
   });
@@ -413,13 +455,11 @@ describe("estimateVram", () => {
           "masterGb": 0,
           "maxConcurrency": null,
           "optimizerGb": 0,
-          "profile": "Proxy 4-bit estimate",
+          "profile": "Official BF16 checkpoint loaded as 4-bit",
           "requiredGb": 44.2,
           "runtime": "Transformers",
           "totalGb": 44.2,
-          "warnings": [
-            "Proxy 4-bit estimate is a proxy estimate, not an official Llama 3.1 70B checkpoint profile.",
-          ],
+          "warnings": [],
           "weightsGb": 38.8,
         },
         "inference7B24Gb": {
@@ -461,14 +501,14 @@ describe("estimateVram", () => {
           "kvGb": 0.8,
           "linearStateGb": 0,
           "masterGb": 0,
-          "maxConcurrency": 7,
+          "maxConcurrency": 6,
           "optimizerGb": 0,
           "profile": "Official BF16 checkpoint",
-          "requiredGb": 36.9,
+          "requiredGb": 37.1,
           "runtime": "vLLM",
-          "totalGb": 33.2,
+          "totalGb": 33.4,
           "warnings": [],
-          "weightsGb": 29.4,
+          "weightsGb": 29.5,
         },
         "qwen35Transformers": {
           "activationsGb": 0,
@@ -480,11 +520,11 @@ describe("estimateVram", () => {
           "maxConcurrency": null,
           "optimizerGb": 0,
           "profile": "Official BF16 checkpoint",
-          "requiredGb": 11.7,
+          "requiredGb": 6.3,
           "runtime": "Transformers",
-          "totalGb": 11.7,
+          "totalGb": 6.3,
           "warnings": [],
-          "weightsGb": 10,
+          "weightsGb": 4.7,
         },
         "qwen35Vllm": {
           "activationsGb": 0,
@@ -493,14 +533,14 @@ describe("estimateVram", () => {
           "kvGb": 0.1,
           "linearStateGb": 0.053,
           "masterGb": 0,
-          "maxConcurrency": 59,
+          "maxConcurrency": 87,
           "optimizerGb": 0,
           "profile": "Official BF16 checkpoint",
-          "requiredGb": 13,
+          "requiredGb": 7.1,
           "runtime": "vLLM",
-          "totalGb": 11.7,
+          "totalGb": 6.3,
           "warnings": [],
-          "weightsGb": 10,
+          "weightsGb": 4.7,
         },
       }
     `);

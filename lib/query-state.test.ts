@@ -27,6 +27,7 @@ describe("query state", () => {
     expect(parsed.gpuCount).toBe(4);
     expect(parsed.modelId).toBe("qwen-3.5-4b");
     expect(parsed.inferenceProfileId).toBe("official-bf16");
+    expect(parsed.dtype).toBe("bf16");
   });
 
   it("falls back to the default runtime for deprecated runtime ids", () => {

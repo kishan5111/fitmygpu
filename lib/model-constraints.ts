@@ -1,7 +1,6 @@
 import { models } from "@/data/models";
 import {
   DEFAULT_KV_CACHE_DTYPE,
-  QLORA_WEIGHT_BYTES,
   TRANSFORMERS_BASELINE_BATCH_SIZE,
   TRANSFORMERS_BASELINE_CONTEXT_LENGTH,
   TRAINING_ENABLED,
@@ -18,64 +17,13 @@ import type {
 
 const modelMap = new Map(models.map((model) => [model.id, model]));
 
-const proxyProfiles: InferenceProfile[] = [
-  {
-    id: "proxy-fp32",
-    label: "Proxy FP32 estimate",
-    effectiveDtype: "fp32",
-    official: false,
-    confidence: "proxy",
-    note: "Fallback dense-style FP32 estimate when no official FP32 deployment checkpoint is selected.",
-    sourceUrl: "",
-    weightMode: "direct",
-    weightBytes: 4,
-    supportedRuntimes: ALL_RUNTIMES,
-  },
-  {
-    id: "proxy-fp8",
-    label: "Proxy FP8 estimate",
-    effectiveDtype: "fp8",
-    official: false,
-    confidence: "proxy",
-    note: "Fallback FP8-style estimate. Real deployed FP8 checkpoints can carry extra metadata or packing overhead.",
-    sourceUrl: "",
-    weightMode: "direct",
-    weightBytes: 1,
-    supportedRuntimes: ALL_RUNTIMES,
-  },
-  {
-    id: "proxy-int8",
-    label: "Proxy INT8 estimate",
-    effectiveDtype: "int8",
-    official: false,
-    confidence: "proxy",
-    note: "Fallback INT8 estimate. Real INT8 checkpoints can land above or below this depending on scales, zeros, and packing.",
-    sourceUrl: "",
-    weightMode: "direct",
-    weightBytes: 1,
-    supportedRuntimes: ALL_RUNTIMES,
-  },
-  {
-    id: "proxy-int4",
-    label: "Proxy 4-bit estimate",
-    effectiveDtype: "int4",
-    official: false,
-    confidence: "proxy",
-    note: "Fallback 4-bit estimate using the generic estimator bytes-per-parameter assumption rather than an official checkpoint size.",
-    sourceUrl: "",
-    weightMode: "direct",
-    weightBytes: QLORA_WEIGHT_BYTES,
-    supportedRuntimes: ALL_RUNTIMES,
-  },
-];
-
 export function getModelSpec(modelId: string): ModelSpec {
   return modelMap.get(modelId) ?? models[0];
 }
 
 export function getInferenceProfiles(modelOrId: ModelSpec | string): InferenceProfile[] {
   const model = typeof modelOrId === "string" ? getModelSpec(modelOrId) : modelOrId;
-  return [...model.inferenceProfiles, ...proxyProfiles];
+  return model.inferenceProfiles;
 }
 
 export function getCompatibleInferenceProfiles(
@@ -85,6 +33,14 @@ export function getCompatibleInferenceProfiles(
   return getInferenceProfiles(modelOrId).filter((profile) =>
     profileSupportsRuntime(profile, runtimeId),
   );
+}
+
+export function getAllowedLoadDtypes(profile: InferenceProfile): Dtype[] {
+  if (!canEstimateAlternateLoadDtype(profile)) {
+    return [profile.effectiveDtype];
+  }
+
+  return ["fp32", "fp16", "bf16", "fp8", "int8", "int4"];
 }
 
 export function getInferenceProfile(
@@ -108,7 +64,7 @@ export function getInferenceProfile(
 
   return (
     pickInferenceProfileForDtype(fallbackDtype ?? "bf16", available) ??
-    getInferenceProfiles(model)[0]
+    model.inferenceProfiles[0]
   );
 }
 
@@ -192,7 +148,7 @@ export function applyModelConstraints(input: EstimateInput): EstimateInput {
         : DEFAULT_KV_CACHE_DTYPE,
     dtype:
       nextMode === "inference" && nextInferenceProfile
-        ? nextInferenceProfile.effectiveDtype
+        ? clampLoadDtype(nextInferenceProfile, nextDtype)
         : nextDtype,
     inferenceProfileId:
       nextMode === "inference" ? nextInferenceProfile?.id ?? "" : input.inferenceProfileId,
@@ -218,25 +174,19 @@ function pickInferenceProfileForDtype(
   availableProfiles: InferenceProfile[],
 ): InferenceProfile | undefined {
   if (dtype === "fp32") {
-    return availableProfiles.find((profile) => profile.id === "proxy-fp32");
+    return availableProfiles.find((profile) => profile.effectiveDtype === "fp32");
   }
 
   if (dtype === "fp8") {
-    return (
-      availableProfiles.find((profile) => profile.effectiveDtype === "fp8") ??
-      availableProfiles.find((profile) => profile.id === "proxy-fp8")
-    );
+    return availableProfiles.find((profile) => profile.effectiveDtype === "fp8");
   }
 
   if (dtype === "int8") {
-    return availableProfiles.find((profile) => profile.id === "proxy-int8");
+    return availableProfiles.find((profile) => profile.effectiveDtype === "int8");
   }
 
   if (dtype === "int4") {
-    return (
-      availableProfiles.find((profile) => profile.effectiveDtype === "int4") ??
-      availableProfiles.find((profile) => profile.id === "proxy-int4")
-    );
+    return availableProfiles.find((profile) => profile.effectiveDtype === "int4");
   }
 
   return (
@@ -248,4 +198,39 @@ function pickInferenceProfileForDtype(
 
 function profileSupportsRuntime(profile: InferenceProfile, runtimeId: RuntimeId): boolean {
   return (profile.supportedRuntimes ?? ALL_RUNTIMES).includes(runtimeId);
+}
+
+function clampLoadDtype(profile: InferenceProfile, dtype: Dtype): Dtype {
+  return getAllowedLoadDtypes(profile).includes(dtype) ? dtype : profile.effectiveDtype;
+}
+
+function canEstimateAlternateLoadDtype(profile: InferenceProfile): boolean {
+  if (profile.loadDtypeMode === "profile_only") {
+    return false;
+  }
+
+  if (profile.loadDtypeMode === "estimate_from_load_dtype") {
+    return true;
+  }
+
+  if (!profile.official || profile.weightMode !== "direct") {
+    return false;
+  }
+
+  if (
+    profile.effectiveDtype !== "fp32" &&
+    profile.effectiveDtype !== "fp16" &&
+    profile.effectiveDtype !== "bf16"
+  ) {
+    return false;
+  }
+
+  if (profile.weightBytes === undefined) {
+    return true;
+  }
+
+  const expectedBytes =
+    profile.effectiveDtype === "fp32" ? 4 : 2;
+
+  return Math.abs(profile.weightBytes - expectedBytes) <= 0.2;
 }

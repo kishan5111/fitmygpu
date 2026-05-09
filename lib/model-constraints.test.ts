@@ -6,7 +6,7 @@ import {
 } from "@/lib/model-constraints";
 
 describe("model constraints", () => {
-  it("filters runtime-incompatible profiles and falls back to a compatible proxy", () => {
+  it("filters runtime-incompatible profiles and falls back to a compatible official profile", () => {
     const transformersProfiles = getCompatibleInferenceProfiles("phi-4-14b", "transformers");
     const vllmProfiles = getCompatibleInferenceProfiles("phi-4-14b", "vllm");
 
@@ -21,7 +21,7 @@ describe("model constraints", () => {
       inferenceProfileId: "official-onnx-int4",
     });
 
-    expect(normalized.inferenceProfileId).toBe("proxy-int4");
+    expect(normalized.inferenceProfileId).toBe("official-bf16");
     expect(normalized.dtype).toBe("int4");
   });
 
@@ -37,6 +37,19 @@ describe("model constraints", () => {
     expect(normalized.kvCacheDtype).toBe("bf16");
     expect(normalized.contextLength).toBe(4096);
     expect(normalized.batchSize).toBe(1);
+  });
+
+  it("clamps unsupported load dtype overrides back to the selected profile dtype", () => {
+    const normalized = applyModelConstraints({
+      ...DEFAULT_INPUT,
+      modelId: "gpt-oss-120b",
+      runtimeId: "vllm",
+      dtype: "int4",
+      inferenceProfileId: "official-mixed",
+    });
+
+    expect(normalized.inferenceProfileId).toBe("official-mixed");
+    expect(normalized.dtype).toBe("bf16");
   });
 
   it("prefers the selected checkpoint profile URL over the base model URL", () => {

@@ -14,6 +14,7 @@ import {
 } from "@/lib/format";
 import {
   applyModelConstraints,
+  getAllowedLoadDtypes,
   getCompatibleInferenceProfile,
   getModelSpec,
   hasCompatibleInferenceProfile,
@@ -151,6 +152,12 @@ function estimateResolvedModelVram(
         "This vLLM estimate uses a BF16-equivalent KV cache baseline. In practice the CLI often leaves KV cache dtype on auto unless you explicitly force FP8.",
       );
     }
+  }
+
+  if (normalized.mode === "inference") {
+    notes.push(
+      "For inference, resident weight memory comes from the selected checkpoint profile. Load dtype can change that resident estimate for standard float checkpoints, while mixed and already-quantized profiles stay pinned to their shipped artifact. KV cache dtype is modeled separately.",
+    );
   }
 
   if (normalized.mode === "inference" && normalized.runtimeId === "transformers") {
@@ -347,7 +354,7 @@ function buildInferenceEstimate(
       )} = ${formatGb(weightsBytes)}`,
       note:
         strategy.weightNote ??
-        `${formatDtype(strategy.effectiveDtype)} controls how compact the resident weights are.`,
+        `${strategy.calculationProfile} determines the resident weight footprint in this estimate.`,
     },
     {
       label: "KV cache",
@@ -735,6 +742,12 @@ function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
     }
 
     let weightNote = profile.note;
+    const usesAlternateLoadDtype =
+      input.dtype !== profile.effectiveDtype &&
+      getAllowedLoadDtypes(profile).includes(input.dtype);
+    const changesResidentWeightBytes =
+      usesAlternateLoadDtype &&
+      getInferenceWeightBytes(input.dtype) !== getInferenceWeightBytes(profile.effectiveDtype);
 
     if (!profile.official) {
       warnings.push(
@@ -745,16 +758,24 @@ function resolveStrategy(input: EstimateInput, model: ModelSpec): Strategy {
       weightNote = `${profile.note} The estimator back-solves an effective resident bytes-per-parameter value using a reference batch of ${profile.targetBatchSize ?? 1} and context of ${formatInteger(
         profile.targetContextLength ?? 0,
       )} tokens, then adds KV cache and runtime overhead for your actual batch and context settings.`;
+    } else if (changesResidentWeightBytes) {
+      weightNote = `${profile.note} This run is estimating the selected checkpoint loaded as ${formatDtype(
+        input.dtype,
+      )} instead of its published on-disk format. That is a requantized or recast resident-weight estimate, not a shipped artifact size.`;
     }
 
     return {
       mode: "inference",
-      effectiveDtype: profile.effectiveDtype,
+      effectiveDtype: usesAlternateLoadDtype ? input.dtype : profile.effectiveDtype,
       effectiveTrainingType: input.trainingType,
       effectiveInferenceProfileId: profile.id,
-      calculationProfile: profile.label,
+      calculationProfile: changesResidentWeightBytes
+        ? `${profile.label} loaded as ${formatDtype(input.dtype)}`
+        : profile.label,
       weightBytes:
-        profile.weightMode === "calibrated"
+        changesResidentWeightBytes
+          ? getInferenceWeightBytes(input.dtype)
+          : profile.weightMode === "calibrated"
           ? solveOfficialInferenceWeightBytes(model, profile)
           : profile.weightBytes ?? getInferenceWeightBytes(profile.effectiveDtype),
       kvBytes: getKvCacheBytesPerElement(input.kvCacheDtype),
