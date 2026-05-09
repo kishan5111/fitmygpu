@@ -73,7 +73,7 @@ export default async function ModelPage({ params }: PageProps) {
       </section>
 
       <section className="space-y-6">
-        <Card eyebrow="Overview" title="What this model is">
+        <Card eyebrow="Overview and architecture" title="What this model is and what changes memory">
           <div className="space-y-3">
             <DetailRow label="Company" value={company?.name ?? model.organization} />
             <DetailRow label="Family" value={model.family} />
@@ -87,21 +87,33 @@ export default async function ModelPage({ params }: PageProps) {
               value={formatInteger(model.contextLength)}
             />
           </div>
-        </Card>
-
-        <Card eyebrow="Architecture" title="What changes the memory shape">
-          <p>{model.architectureType}</p>
+          <p className="mt-5">{model.architectureType}</p>
+          {model.overviewPoints?.length ? (
+            <InsightList className="mt-5" points={model.overviewPoints} />
+          ) : null}
           <div className="mt-5 rounded-[1.6rem] bg-white/58 p-5">
             <ModelSpecGrid model={model} />
           </div>
         </Card>
 
         <Card eyebrow="Research highlight" title="Why it matters">
-          <p>{model.researchHighlight}</p>
+          {model.researchHighlights?.length ? (
+            <InsightList points={model.researchHighlights} />
+          ) : (
+            <p>{model.researchHighlight}</p>
+          )}
         </Card>
 
         <Card eyebrow="Memory behavior" title="What dominates VRAM">
-          <p>{model.memoryNote}</p>
+          {model.memoryBehaviorPoints?.length ? (
+            <div className="space-y-3">
+              {model.memoryBehaviorPoints.map((point) => (
+                <p key={point}>{point}</p>
+              ))}
+            </div>
+          ) : (
+            <p>{model.memoryNote}</p>
+          )}
           {isMultimodalModel(model) ? (
             <p className="mt-3">
               FitMyGPU currently treats this as a text-only estimate. Resident multimodal weights remain counted, but media-token overhead is excluded.
@@ -130,6 +142,25 @@ export default async function ModelPage({ params }: PageProps) {
   );
 }
 
+function InsightList({
+  className,
+  points,
+}: {
+  className?: string;
+  points: Array<{ label: string; detail: string }>;
+}) {
+  return (
+    <div className={cx("space-y-3", className)}>
+      {points.map((point) => (
+        <div key={point.label} className="rounded-[1.35rem] bg-white/58 px-4 py-4">
+          <p className="text-sm font-medium text-[var(--ink)]">{point.label}</p>
+          <p className="mt-1 text-sm leading-7 text-[var(--muted)]">{point.detail}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Card({
   eyebrow,
   title,
@@ -148,4 +179,8 @@ function Card({
       <div className="mt-4 text-sm leading-7 text-[var(--ink)]">{children}</div>
     </section>
   );
+}
+
+function cx(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
 }

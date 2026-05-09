@@ -1,5 +1,5 @@
 import { ALL_RUNTIMES } from "@/lib/runtime";
-import type { InferenceProfile, ModelSpec } from "@/lib/types";
+import type { InferenceProfile, ModelInsightPoint, ModelSpec } from "@/lib/types";
 
 function bytesFromCheckpointGb(checkpointGb: number, totalParams: number) {
   return (checkpointGb * 1_000_000_000) / totalParams;
@@ -20,6 +20,54 @@ function directProfile(
     weightMode: "direct",
   };
 }
+
+function point(label: string, detail: string): ModelInsightPoint {
+  return { label, detail };
+}
+
+const qwen35OverviewPoints = (attentionLayers: number, totalLayers: number) => [
+  point(
+    "Training scope",
+    "Built as a unified vision-language foundation with pre-training and post-training on multimodal tokens rather than a separate late-fusion stack.",
+  ),
+  point(
+    "Hybrid layout",
+    `${attentionLayers} of ${totalLayers} layers use gated attention while the rest use Gated DeltaNet blocks, so the stack is not a full-attention transformer end to end.`,
+  ),
+  point(
+    "Context design",
+    "Published with a native 262K context window and an architecture intended to stretch beyond that range in longer-context settings.",
+  ),
+];
+
+const qwen35ResearchHighlights = [
+  point(
+    "Unified vision-language foundation",
+    "The family is trained as one multimodal base, which is why the text-only serving estimate still keeps resident vision-side weights in memory.",
+  ),
+  point(
+    "Efficient hybrid architecture",
+    "Gated DeltaNet layers carry sequence state while periodic gated-attention layers handle KV-heavy reasoning, reducing cache pressure compared with a dense attention-only stack.",
+  ),
+  point(
+    "Scaled post-training",
+    "Qwen describes reinforcement-learning and large-agent-environment scaling as a core part of the family, not just a small instruction-tuning pass.",
+  ),
+  point(
+    "Global coverage",
+    "The family targets broad multilingual support, which matters for deployment quality but also implies a larger unified vocabulary and general-purpose serving footprint.",
+  ),
+  point(
+    "Training infrastructure",
+    "The release emphasizes high multimodal training efficiency and asynchronous RL infrastructure, signaling that the architecture is designed for scale rather than as a small multimodal add-on.",
+  ),
+];
+
+const qwen35MemoryBehaviorPoints = (attentionLayers: number, totalLayers: number) => [
+  `This text-only estimate still keeps the resident multimodal checkpoint weights on card, so the floor is higher than a pure language-only artifact of similar active size.`,
+  `Only ${attentionLayers} of ${totalLayers} layers carry a standard KV cache. The remaining layers contribute a fixed sequence-state term instead, which makes long-context growth less aggressive than a dense full-attention stack.`,
+  "Longer context and higher concurrency still increase memory monotonically, but more of the footprint shifts into mixed KV-plus-state behavior instead of pure transformer cache expansion.",
+];
 
 export const models: ModelSpec[] = [
   {
@@ -345,6 +393,9 @@ export const models: ModelSpec[] = [
       "Qwen3.5 alternates gated DeltaNet blocks with gated attention, so only a subset of layers carry a full KV cache during text generation.",
     memoryNote:
       "This text-only estimate still counts the resident multimodal checkpoint weights; only media-token-specific memory is excluded in v1.",
+    overviewPoints: qwen35OverviewPoints(6, 24),
+    researchHighlights: qwen35ResearchHighlights,
+    memoryBehaviorPoints: qwen35MemoryBehaviorPoints(6, 24),
     inferenceProfiles: [
       directProfile({
         id: "official-bf16",
@@ -389,6 +440,9 @@ export const models: ModelSpec[] = [
       "The 2B variant keeps the same 6 attention-bearing layers as the 0.8B model, which materially reduces KV growth compared with a full-attention stack.",
     memoryNote:
       "Resident weights still include the multimodal components, but the hybrid stack keeps text-generation cache growth noticeably lower than a dense full-attention design.",
+    overviewPoints: qwen35OverviewPoints(6, 24),
+    researchHighlights: qwen35ResearchHighlights,
+    memoryBehaviorPoints: qwen35MemoryBehaviorPoints(6, 24),
     inferenceProfiles: [
       directProfile({
         id: "official-bf16",
@@ -433,6 +487,9 @@ export const models: ModelSpec[] = [
       "The 4B language model sits inside a roughly 5B resident multimodal artifact and uses only 8 gated-attention layers for KV-heavy generation.",
     memoryNote:
       "The hybrid layout keeps cache growth lower than dense 32-layer models, but the extra multimodal resident weights raise the single-card floor.",
+    overviewPoints: qwen35OverviewPoints(8, 32),
+    researchHighlights: qwen35ResearchHighlights,
+    memoryBehaviorPoints: qwen35MemoryBehaviorPoints(8, 32),
     inferenceProfiles: [
       directProfile({
         id: "official-bf16",
@@ -477,6 +534,9 @@ export const models: ModelSpec[] = [
       "The hybrid layout keeps only 8 of 32 layers in the gated-attention path, which materially changes KV-cache behavior versus a dense long-context model.",
     memoryNote:
       "This estimate intentionally keeps the full multimodal checkpoint resident even for text-only use, so it is conservative relative to runtime-specific language-only shortcuts.",
+    overviewPoints: qwen35OverviewPoints(8, 32),
+    researchHighlights: qwen35ResearchHighlights,
+    memoryBehaviorPoints: qwen35MemoryBehaviorPoints(8, 32),
     inferenceProfiles: [
       directProfile({
         id: "official-bf16",

@@ -72,9 +72,17 @@ export interface ModelSpec {
   shortDescription: string;
   researchHighlight: string;
   memoryNote: string;
+  overviewPoints?: ModelInsightPoint[];
+  researchHighlights?: ModelInsightPoint[];
+  memoryBehaviorPoints?: string[];
   inferenceProfiles: InferenceProfile[];
   fixedDtype?: Dtype;
   supportedModes?: Mode[];
+}
+
+export interface ModelInsightPoint {
+  label: string;
+  detail: string;
 }
 
 export interface CompanySpec {

@@ -57,7 +57,7 @@ export default async function CompanyPage({ params }: PageProps) {
           <SectionTitle eyebrow="Start here" title="Latest model" />
           <div className="mt-5">
             <Link
-              className="rounded-[1.7rem] border border-[var(--line)] bg-white/58 p-6 transition hover:border-[var(--line-strong)] hover:bg-white/72"
+              className="block rounded-[1.7rem] border border-[var(--line)] bg-white/58 p-6 transition hover:border-[var(--line-strong)] hover:bg-white/72"
               href={`/models/${latestModel.id}`}
             >
               <p className="text-sm text-[var(--muted)]">{latestModel.family}</p>
