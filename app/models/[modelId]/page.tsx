@@ -3,10 +3,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { DetailRow } from "@/components/detail-row";
-import { ModelSpecGrid } from "@/components/model-spec-grid";
 import { models } from "@/data/models";
-import { formatInteger } from "@/lib/format";
+import { formatInteger, formatParamCount } from "@/lib/format";
 import {
+  getKvBearingLayers,
   isMultimodalModel,
 } from "@/lib/model-display";
 import {
@@ -74,6 +74,7 @@ export default async function ModelPage({ params }: PageProps) {
             <div className="grid gap-x-10 gap-y-4 md:grid-cols-2">
               <DetailRow label="Company" value={company?.name ?? model.organization} />
               <DetailRow label="Family" value={model.family} />
+              <DetailRow label="Release date" value={formatReleaseDate(model.releaseDate)} />
               <DetailRow label="Architecture" value={model.architectureType} />
               <DetailRow label="License" value={model.license} />
               <DetailRow
@@ -84,9 +85,19 @@ export default async function ModelPage({ params }: PageProps) {
                 label="Context window"
                 value={formatInteger(model.contextLength)}
               />
-            </div>
-            <div className="mt-5 border-t border-[var(--line)] pt-5">
-              <ModelSpecGrid model={model} />
+              <DetailRow label="Total params" value={formatParamCount(model.totalParams)} />
+              <DetailRow
+                label="Active params"
+                value={model.activeParams ? formatParamCount(model.activeParams) : "Dense model"}
+              />
+              <DetailRow label="Layers" value={model.numLayers.toString()} />
+              <DetailRow label="Hidden size" value={formatInteger(model.hiddenSize)} />
+              <DetailRow label="Attention heads" value={model.numAttentionHeads.toString()} />
+              <DetailRow
+                label="KV heads"
+                value={(model.numKvHeads ?? model.numAttentionHeads).toString()}
+              />
+              <DetailRow label="KV-bearing layers" value={getKvBearingLayers(model).toString()} />
             </div>
           </div>
           {model.overviewPoints?.length ? (
@@ -94,13 +105,25 @@ export default async function ModelPage({ params }: PageProps) {
           ) : null}
         </Card>
 
-        <Card eyebrow="Research highlight" title="Why it matters">
+        <Card eyebrow="Research highlight" title="What improved">
           {model.researchHighlights?.length ? (
             <InsightList points={model.researchHighlights} />
           ) : (
             <p>{model.researchHighlight}</p>
           )}
         </Card>
+
+        {model.trainingReleaseContext?.length ? (
+          <Card eyebrow="Training and release context" title="How it was released">
+            <InsightList points={model.trainingReleaseContext} />
+          </Card>
+        ) : null}
+
+        {model.strengths?.length ? (
+          <Card eyebrow="Where it is strong" title="Where it is strong">
+            <InsightList points={model.strengths} />
+          </Card>
+        ) : null}
 
         <Card eyebrow="Memory behavior" title="What dominates VRAM">
           {model.memoryBehaviorPoints?.length ? (
@@ -181,4 +204,21 @@ function Card({
 
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
+}
+
+function formatReleaseDate(value?: string) {
+  if (!value) {
+    return "Unknown";
+  }
+
+  const date = new Date(`${value}T00:00:00Z`);
+
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      });
 }

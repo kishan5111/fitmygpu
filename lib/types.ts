@@ -45,6 +45,7 @@ export interface ModelSpec {
   family: string;
   organization: string;
   companyId?: string;
+  releaseDate?: string;
   architectureType: string;
   isMoe: boolean;
   totalParams: number;
@@ -75,6 +76,8 @@ export interface ModelSpec {
   memoryNote: string;
   overviewPoints?: ModelInsightPoint[];
   researchHighlights?: ModelInsightPoint[];
+  trainingReleaseContext?: ModelInsightPoint[];
+  strengths?: ModelInsightPoint[];
   memoryBehaviorPoints?: string[];
   inferenceProfiles: InferenceProfile[];
   fixedDtype?: Dtype;
