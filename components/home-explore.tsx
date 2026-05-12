@@ -17,7 +17,15 @@ export function HomeExplore() {
   return (
     <div className="mx-auto flex max-w-[74rem] flex-col gap-6 px-4 pb-10 sm:px-6 lg:px-10 lg:pb-14">
       <section className="surface-card rounded-[2rem] p-6 md:p-8">
-        <SectionTitle eyebrow="Updated models" title="Recent registry coverage" />
+        <p className="max-w-3xl text-sm leading-7 text-[var(--muted)] md:text-base">
+          Use the calculator first, then go deeper with model pages and release
+          notes when you want architecture context, memory behavior, or newer
+          inference updates.
+        </p>
+      </section>
+
+      <section className="surface-card rounded-[2rem] p-6 md:p-8">
+        <SectionTitle eyebrow="Model research" title="About models" />
         <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {recentModels.map((model) => (
             <Link
@@ -61,7 +69,7 @@ export function HomeExplore() {
       </section>
 
       <section className="surface-card rounded-[2rem] p-6 md:p-8">
-        <SectionTitle eyebrow="Blog" title="Short updates" />
+        <SectionTitle eyebrow="Latest releases" title="Model and inference notes" />
         <div className="mt-5 grid gap-4 lg:grid-cols-3">
           {recentPosts.map((post) => (
             <Link

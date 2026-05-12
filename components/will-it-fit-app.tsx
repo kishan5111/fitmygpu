@@ -292,8 +292,11 @@ export function WillItFitApp({ initialInput, initialResult }: Props) {
               Will It Fit?
             </h1>
             <p className="max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg">
-              Estimate single-GPU text inference VRAM across Transformers and
-              vLLM with a compact, explainable breakdown.
+              Estimate text inference VRAM across Transformers and vLLM with a
+              compact, explainable breakdown.
+            </p>
+            <p className="max-w-2xl text-sm leading-6 text-[var(--muted)] md:text-base">
+              Model pages and release notes are included here too.
             </p>
           </div>
         </div>

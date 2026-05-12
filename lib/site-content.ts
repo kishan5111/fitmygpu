@@ -96,6 +96,10 @@ export function getPostsForModel(modelId: string): BlogPost[] {
 }
 
 export function getCompanyModelSeries(model: ModelSpec): string {
+  if (model.id.startsWith("qwen-3.6-")) {
+    return "Qwen 3.6";
+  }
+
   if (model.id.startsWith("qwen-3.5-")) {
     return "Qwen 3.5";
   }
